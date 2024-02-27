@@ -1,7 +1,5 @@
 #include "../lib.h"
 
-#include <iostream>
-
 namespace SeamCarver
 {
   float _toLinear(float c)
