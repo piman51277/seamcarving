@@ -88,7 +88,7 @@ namespace SeamCarver
     this->seam = new int[height];
     std::fill(this->seam, this->seam + height, 0);
     this->buf = new uint32_t[width * height];
-    std::fill(this->buf, this->buf + width * height, 0);
+    std::fill(this->buf, this->buf + width * height, 0x00FFFFFF);
 
     // convert the pixels to CIELAB
     for (uint32_t i = 0; i < width * height; i++)
@@ -140,17 +140,19 @@ namespace SeamCarver
       {
         // 3x3 kernel
         float diffSum = 0;
+        float hits = 0;
         for (int k = -1; k <= 1; k++)
         {
           for (int l = -1; l <= 1; l++)
           {
             if (i + k >= 0 && i + k < this->initialWidth && j + l >= 0 && j + l < this->initialHeight)
             {
+              hits += 1;
               diffSum += distance(this->lab[j * this->initialWidth + i], this->lab[(j + l) * this->initialWidth + i + k]);
             }
           }
         }
-        this->gradient[j * this->initialWidth + i] = (uint32_t)diffSum;
+        this->gradient[j * this->initialWidth + i] = (uint32_t)(diffSum / hits * 150.0);
       }
     }
   }
@@ -166,87 +168,58 @@ namespace SeamCarver
       {
         // 3x3 kernel
         float diffSum = 0;
+        float hits = 0;
         for (int k = -1; k <= 1; k++)
         {
           for (int l = -1; l <= 1; l++)
           {
-            if (i + k >= 0 && i + k < this->initialHeight && j + l >= 0 && j + l < this->initialWidth)
+            if (i + k >= 0 && i + k < this->initialWidth && j + l >= 0 && j + l < this->initialHeight)
             {
-              diffSum += distance(this->lab[i * this->initialWidth + j], this->lab[(i + k) * this->initialWidth + j + l]);
+              hits += 1;
+              diffSum += distance(this->lab[j * this->initialWidth + i], this->lab[(j + l) * this->initialWidth + i + k]);
             }
           }
         }
-        this->gradient[i * this->initialWidth + j] = (uint32_t)diffSum;
+        this->gradient[j * this->initialWidth + i] = (uint32_t)(diffSum / hits * 150.0);
       }
     }
   }
 
   void Carver::computeSeam()
   {
-    static bool first = true;
-
     // compute the first row of the seam
     for (uint32_t i = 0; i < this->currentWidth; i++)
     {
       this->buf[i] = this->gradient[i];
     }
 
-    if (first)
+    // top-down DP approach
+    for (uint32_t i = 1; i < this->initialHeight; i++)
     {
-      // top-down DP approach
-      for (uint32_t i = 1; i < this->initialHeight; i++)
+      for (uint32_t j = 0; j < this->currentWidth; j++)
       {
-        for (uint32_t j = 0; j < this->currentWidth; j++)
+        uint32_t index = i * this->initialWidth + j;
+        uint32_t prevRow = (i - 1) * this->initialWidth + j;
+
+        // if the mask is set, set the value pretty high
+        if (this->mask[index] == 1)
         {
-          uint32_t index = i * this->initialWidth + j;
-          uint32_t prevRow = (i - 1) * this->initialWidth + j;
-
-          if (j == 0)
-          {
-            this->buf[index] = this->gradient[index] + std::min(this->buf[prevRow], this->buf[prevRow + 1]);
-          }
-          else if (j == this->initialWidth - 1)
-          {
-            this->buf[index] = this->gradient[index] + std::min(this->buf[prevRow - 1], this->buf[prevRow]);
-          }
-          else
-          {
-            this->buf[index] = this->gradient[index] + std::min({this->buf[prevRow - 1], this->buf[prevRow], this->buf[prevRow + 1]});
-          }
-        }
-      }
-      first = false;
-    }
-    else
-    {
-      // we can reuse most of the buffer
-      uint32_t rescanStart = std::max(0, this->seam[0] - 1);
-      uint32_t rescanEnd = std::min((int)this->currentWidth - 1, this->seam[0] + 1);
-
-      // rescan in a cone pattern
-      for (uint32_t i = 1; i < this->initialHeight; i++)
-      {
-        for (uint32_t j = rescanStart; j <= rescanEnd; j++)
-        {
-          uint32_t index = i * this->initialWidth + j;
-          uint32_t prevRow = (i - 1) * this->initialWidth + j;
-
-          if (j == 0)
-          {
-            this->buf[index] = this->gradient[index] + std::min(this->buf[prevRow], this->buf[prevRow + 1]);
-          }
-          else if (j == this->initialWidth - 1)
-          {
-            this->buf[index] = this->gradient[index] + std::min(this->buf[prevRow - 1], this->buf[prevRow]);
-          }
-          else
-          {
-            this->buf[index] = this->gradient[index] + std::min({this->buf[prevRow - 1], this->buf[prevRow], this->buf[prevRow + 1]});
-          }
+          this->buf[index] += 0x000FFFFF;
+          continue;
         }
 
-        rescanStart = rescanStart > 0 ? rescanStart - 1 : 0;
-        rescanEnd = rescanEnd < this->currentWidth - 1 ? rescanEnd + 1 : this->currentWidth - 1;
+        if (j == 0)
+        {
+          this->buf[index] = this->gradient[index] + std::min(this->buf[prevRow], this->buf[prevRow + 1]);
+        }
+        else if (j == this->currentWidth - 1)
+        {
+          this->buf[index] = this->gradient[index] + std::min(this->buf[prevRow - 1], this->buf[prevRow]);
+        }
+        else
+        {
+          this->buf[index] = this->gradient[index] + std::min({this->buf[prevRow - 1], this->buf[prevRow], this->buf[prevRow + 1]});
+        }
       }
     }
 
@@ -267,10 +240,12 @@ namespace SeamCarver
       uint32_t searchMin = minIndex % this->currentWidth == 0 ? 0 : minIndex - 1;
       uint32_t searchMax = minIndex % this->currentWidth == this->currentWidth - 1 ? this->currentWidth - 1 : minIndex + 1;
 
+      uint32_t minVal = this->buf[row * this->initialWidth + minIndex];
       for (uint32_t i = searchMin; i <= searchMax; i++)
       {
-        if (this->buf[row * this->currentWidth + i] < this->buf[row * this->currentWidth + minIndex])
+        if (this->buf[row * this->initialWidth + i] < minVal)
         {
+          minVal = this->buf[row * this->initialWidth + i];
           minIndex = i;
         }
       }
@@ -284,12 +259,12 @@ namespace SeamCarver
     for (uint32_t i = 0; i < this->initialHeight; i++)
     {
       uint32_t offset = i * this->initialWidth + this->seam[i];
-      uint32_t coffset = i * this->currentWidth + this->seam[i];
       uint32_t maskOffset = this->currentWidth - this->seam[i] - 1;
       memcpy(this->pixels + offset, this->pixels + offset + 1, maskOffset * sizeof(uint32_t));
       memcpy(this->lab + offset, this->lab + offset + 1, maskOffset * sizeof(CIELAB));
       memcpy(this->gradient + offset, this->gradient + offset + 1, maskOffset * sizeof(uint32_t));
-      memcpy(this->buf + coffset, this->buf + coffset + 1, maskOffset * sizeof(uint32_t));
+      memcpy(this->buf + offset, this->buf + offset + 1, maskOffset * sizeof(uint32_t));
+      memcpy(this->mask + offset, this->mask + offset + 1, maskOffset * sizeof(uint8_t));
     }
     this->currentWidth--;
   }
@@ -300,8 +275,9 @@ namespace SeamCarver
     for (uint32_t i = 0; i < initialHeight; i++)
     {
       int offset = i * this->initialWidth;
-      std::copy(this->gradient + offset, this->gradient + offset + this->currentWidth, img->pixels + i * this->currentWidth);
+      std::copy(this->buf + offset, this->buf + offset + this->currentWidth, img->pixels + i * this->currentWidth);
     }
+
     return img;
   }
 
