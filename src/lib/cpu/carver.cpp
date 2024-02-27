@@ -16,9 +16,9 @@ namespace SeamCarver
 
   CIELAB rgb2lab(Color c)
   {
-    float r = _toLinear(c.rgba.r / 255.0);
-    float g = _toLinear(c.rgba.g / 255.0);
-    float b = _toLinear(c.rgba.b / 255.0);
+    float r = _toLinear(c.argb.r / 255.0);
+    float g = _toLinear(c.argb.g / 255.0);
+    float b = _toLinear(c.argb.b / 255.0);
 
     float x = r * 0.4124 + g * 0.3576 + b * 0.1805;
     float y = r * 0.2126 + g * 0.7152 + b * 0.0722;
@@ -162,7 +162,7 @@ namespace SeamCarver
 
     for (uint32_t i = 0; i < this->initialHeight; i++)
     {
-      for (uint32_t j = std::max(0, this->seam[i] - 1); j < std::min((int)this->currentWidth, this->seam[i] + 2); j++)
+      for (uint32_t j = std::max(0, this->seam[i] - 1); j < this->seam[i]; j++)
       {
         // 3x3 kernel
         float diffSum = 0;
@@ -183,29 +183,70 @@ namespace SeamCarver
 
   void Carver::computeSeam()
   {
+    static bool first = true;
+
     // compute the first row of the seam
     for (uint32_t i = 0; i < this->currentWidth; i++)
     {
       this->buf[i] = this->gradient[i];
     }
 
-    // top-down DP approach
-    for (uint32_t i = 1; i < this->initialHeight; i++)
+    if (first)
     {
-      for (uint32_t j = 0; j < this->currentWidth; j++)
+      // top-down DP approach
+      for (uint32_t i = 1; i < this->initialHeight; i++)
       {
-        if (j == 0)
+        for (uint32_t j = 0; j < this->currentWidth; j++)
         {
-          this->buf[i * this->currentWidth + j] = this->gradient[i * this->currentWidth + j] + std::min(this->buf[(i - 1) * this->currentWidth + j], this->buf[(i - 1) * this->currentWidth + j + 1]);
+          uint32_t index = i * this->initialWidth + j;
+          uint32_t prevRow = (i - 1) * this->initialWidth + j;
+
+          if (j == 0)
+          {
+            this->buf[index] = this->gradient[index] + std::min(this->buf[prevRow], this->buf[prevRow + 1]);
+          }
+          else if (j == this->initialWidth - 1)
+          {
+            this->buf[index] = this->gradient[index] + std::min(this->buf[prevRow - 1], this->buf[prevRow]);
+          }
+          else
+          {
+            this->buf[index] = this->gradient[index] + std::min({this->buf[prevRow - 1], this->buf[prevRow], this->buf[prevRow + 1]});
+          }
         }
-        else if (j == this->currentWidth - 1)
+      }
+      first = false;
+    }
+    else
+    {
+      // we can reuse most of the buffer
+      uint32_t rescanStart = std::max(0, this->seam[0] - 1);
+      uint32_t rescanEnd = std::min((int)this->currentWidth - 1, this->seam[0] + 1);
+
+      // rescan in a cone pattern
+      for (uint32_t i = 1; i < this->initialHeight; i++)
+      {
+        for (uint32_t j = rescanStart; j <= rescanEnd; j++)
         {
-          this->buf[i * this->currentWidth + j] = this->gradient[i * this->currentWidth + j] + std::min(this->buf[(i - 1) * this->currentWidth + j - 1], this->buf[(i - 1) * this->currentWidth + j]);
+          uint32_t index = i * this->initialWidth + j;
+          uint32_t prevRow = (i - 1) * this->initialWidth + j;
+
+          if (j == 0)
+          {
+            this->buf[index] = this->gradient[index] + std::min(this->buf[prevRow], this->buf[prevRow + 1]);
+          }
+          else if (j == this->initialWidth - 1)
+          {
+            this->buf[index] = this->gradient[index] + std::min(this->buf[prevRow - 1], this->buf[prevRow]);
+          }
+          else
+          {
+            this->buf[index] = this->gradient[index] + std::min({this->buf[prevRow - 1], this->buf[prevRow], this->buf[prevRow + 1]});
+          }
         }
-        else
-        {
-          this->buf[i * this->currentWidth + j] = this->gradient[i * this->currentWidth + j] + std::min(std::min(this->buf[(i - 1) * this->currentWidth + j - 1], this->buf[(i - 1) * this->currentWidth + j]), this->buf[(i - 1) * this->currentWidth + j + 1]);
-        }
+
+        rescanStart = rescanStart > 0 ? rescanStart - 1 : 0;
+        rescanEnd = rescanEnd < this->currentWidth - 1 ? rescanEnd + 1 : this->currentWidth - 1;
       }
     }
 
@@ -242,12 +283,13 @@ namespace SeamCarver
   {
     for (uint32_t i = 0; i < this->initialHeight; i++)
     {
-      for (uint32_t j = this->seam[i]; j < this->currentWidth - 1; j++)
-      {
-        this->pixels[i * this->initialWidth + j] = this->pixels[i * this->initialWidth + j + 1];
-        this->lab[i * this->initialWidth + j] = this->lab[i * this->initialWidth + j + 1];
-        this->gradient[i * this->initialWidth + j] = this->gradient[i * this->initialWidth + j + 1];
-      }
+      uint32_t offset = i * this->initialWidth + this->seam[i];
+      uint32_t coffset = i * this->currentWidth + this->seam[i];
+      uint32_t maskOffset = this->currentWidth - this->seam[i] - 1;
+      memcpy(this->pixels + offset, this->pixels + offset + 1, maskOffset * sizeof(uint32_t));
+      memcpy(this->lab + offset, this->lab + offset + 1, maskOffset * sizeof(CIELAB));
+      memcpy(this->gradient + offset, this->gradient + offset + 1, maskOffset * sizeof(uint32_t));
+      memcpy(this->buf + coffset, this->buf + coffset + 1, maskOffset * sizeof(uint32_t));
     }
     this->currentWidth--;
   }
@@ -302,7 +344,6 @@ namespace SeamCarver
       {
         this->computeNextGradient();
       }
-
       this->computeSeam();
       this->removeSeam();
     }

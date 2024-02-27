@@ -71,6 +71,7 @@ int main()
     }
 
     carver.removeSeams(1);
+
     std::shared_ptr<SeamCarver::Image> gradient = carver.getPixels();
     uint32_t *gradientPixels = gradient->pixels;
     uint32_t Iwidth = gradient->width;

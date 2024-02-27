@@ -3,22 +3,24 @@
 #include <cinttypes>
 #include <memory>
 #include <cmath>
+#include <algorithm>
+#include <cstring>
 
 namespace SeamCarver
 {
 
-  struct RGBA
+  struct ARGB
   {
+    uint8_t a;
     uint8_t r;
     uint8_t g;
     uint8_t b;
-    uint8_t a;
   };
 
   union Color
   {
     uint32_t value;
-    RGBA rgba;
+    ARGB argb;
   };
 
   struct CIELAB
