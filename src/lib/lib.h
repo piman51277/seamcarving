@@ -30,12 +30,6 @@ namespace SeamCarver
     float b;
   };
 
-  float _toLinear(float c);
-
-  CIELAB rgb2lab(Color rgb);
-
-  float distance(CIELAB a, CIELAB b);
-
   struct Image
   {
     uint32_t *pixels;
@@ -69,11 +63,6 @@ namespace SeamCarver
     uint32_t currentWidth;
 
     /**
-     * Compute the initial gradient of the image.
-     */
-    void computeInitialGradient();
-
-    /**
      * Computes the next seam to be removed.
      */
     void computeSeam();
@@ -84,9 +73,9 @@ namespace SeamCarver
     void removeSeam();
 
     /**
-     * Compute the next gradient of the image.
+     * Compute the gradient of the image.
      */
-    void computeNextGradient();
+    void computeGradient();
 
   public:
     Carver(uint32_t *pixels, uint8_t *mask, uint32_t width, uint32_t height);

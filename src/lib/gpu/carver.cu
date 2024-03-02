@@ -1,29 +1,26 @@
 #include "../lib.h"
-
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
 #include <device_atomic_functions.h>
 #include <cuda_fp16.h>
 
-namespace SeamCarver
-{
-  float _toLinear(float c)
-  {
-    if (c <= 0.04045)
-    {
-      return c / 12.92;
-    }
-    else
-    {
-      return pow((c + 0.055) / 1.055, 2.4);
-    }
-  }
+#include <iostream>
+#include <iomanip>
+#include <chrono>
 
-  CIELAB rgb2lab(Color c)
+typedef std::chrono::high_resolution_clock Clock;
+
+__global__ void rgb2labKernel(SeamCarver::Color *pixels, SeamCarver::CIELAB *lab, uint64_t length)
+{
+  int index = blockIdx.x * blockDim.x + threadIdx.x;
+  int stride = blockDim.x * gridDim.x;
+
+  for (uint64_t i = index; i < length; i += stride)
   {
-    float r = _toLinear(c.argb.r / 255.0);
-    float g = _toLinear(c.argb.g / 255.0);
-    float b = _toLinear(c.argb.b / 255.0);
+    SeamCarver::ARGB argb = pixels[i].argb;
+    float r = (argb.r <= 0.04045) ? (argb.r / 12.92) : pow((argb.r + 0.055) / 1.055, 2.4);
+    float g = (argb.g <= 0.04045) ? (argb.g / 12.92) : pow((argb.g + 0.055) / 1.055, 2.4);
+    float b = (argb.b <= 0.04045) ? (argb.b / 12.92) : pow((argb.b + 0.055) / 1.055, 2.4);
 
     float x = r * 0.4124 + g * 0.3576 + b * 0.1805;
     float y = r * 0.2126 + g * 0.7152 + b * 0.0722;
@@ -60,204 +57,175 @@ namespace SeamCarver
       z = 7.787 * z + 16.0 / 116.0;
     }
 
-    CIELAB lab;
-    lab.l = 116.0 * y - 16.0;
-    lab.a = 500.0 * (x - y);
-    lab.b = 200.0 * (y - z);
-
-    return lab;
+    lab[i].l = 116.0 * y - 16.0;
+    lab[i].a = 500.0 * (x - y);
+    lab[i].b = 200.0 * (y - z);
   }
+}
 
-  float distance(CIELAB a, CIELAB b)
+__device__ float distance(SeamCarver::CIELAB a, SeamCarver::CIELAB b)
+{
+  float dl = a.l - b.l;
+  float da = a.a - b.a;
+  float db = a.b - b.b;
+
+  return sqrt(dl * dl + da * da + db * db);
+}
+
+__global__ void gradientKernel(SeamCarver::CIELAB *lab, uint32_t *gradient, uint32_t width, uint32_t height, uint32_t opwidth)
+{
+  int index = blockIdx.x * blockDim.x + threadIdx.x;
+  int stride = blockDim.x * gridDim.x;
+
+  int space = opwidth * height;
+
+  for (uint64_t q = index; q < space; q+=stride)
   {
-    float dl = a.l - b.l;
-    float da = a.a - b.a;
-    float db = a.b - b.b;
-
-    return sqrt(dl * dl + da * da + db * db);
+    int i = q % opwidth;
+    int j = q / opwidth;
+    
+    // 3x3 kernel
+    float diffSum = 0;
+    float hits = 0;
+    for (int k = -1; k <= 1; k++)
+    {
+      for (int l = -1; l <= 1; l++)
+      {
+        if (i + k >= 0 && i + k < opwidth && j + l >= 0 && j + l < height)
+        {
+          hits += 1;
+          diffSum += distance(lab[j * width + i], lab[(j + l) * width + i + k]);
+        }
+      }
+    }
+    gradient[j * width + i] = (uint32_t)(diffSum / hits * 150.0);
   }
+}
+
+__global__ void dpRowKernel(uint32_t *gradient, uint32_t *buf, uint32_t width, uint32_t row, uint32_t opwidth){
+  int index = blockIdx.x * blockDim.x + threadIdx.x;
+  int stride = blockDim.x * gridDim.x;
+
+  for (uint64_t i = index; i < opwidth; i+=stride)
+  {
+    uint64_t prevRow = (row - 1) * width + i;
+
+    if (i == 0)
+    {
+      buf[row * width + i] = gradient[row * width + i] + min(buf[prevRow], buf[prevRow + 1]);
+    }
+    else if (i == opwidth - 1)
+    {
+      buf[row * width + i] = gradient[row * width + i] + min(buf[prevRow - 1], buf[prevRow]);
+    }
+    else
+    {
+      buf[row * width + i] = gradient[row * width + i] + min(min(buf[prevRow - 1], buf[prevRow]), buf[prevRow + 1]);
+    }
+  }
+}
+
+__global__ void removeKernel(uint32_t *pixels, SeamCarver::CIELAB *lab, uint8_t *mask, int *seam, uint64_t width, uint64_t height, uint64_t currentWidth)
+{
+  int index = blockIdx.x * blockDim.x + threadIdx.x;
+  int stride = blockDim.x * gridDim.x;
+
+  for (uint64_t i = index; i < height; i += stride)
+  {
+    //this is faster than memory copy... why????????
+    uint64_t offset = i * width;
+    for (uint64_t j = seam[i]; j < currentWidth - 1; j++)
+    {
+      pixels[offset + j] = pixels[offset + j + 1];
+      lab[offset + j] = lab[offset + j + 1];
+      mask[offset + j] = mask[offset + j + 1];
+    }
+  }
+}
+
+
+namespace SeamCarver
+{
 
   Carver::Carver(uint32_t *pixels, u_int8_t *mask, uint32_t width, uint32_t height)
-  {
-    this->pixels = new uint32_t[width * height];
-    std::copy(pixels, pixels + width * height, this->pixels);
-    this->mask = new uint8_t[width * height];
-    std::copy(mask, mask + width * height, this->mask);
+  { 
+    cudaMallocManaged(&this->pixels, width * height * sizeof(uint32_t));
+    cudaMemcpy(this->pixels, pixels, width * height * sizeof(uint32_t), cudaMemcpyHostToDevice);
+    cudaMallocManaged(&this->mask, width * height * sizeof(uint8_t));
+    cudaMemcpy(this->mask, mask, width * height * sizeof(uint8_t), cudaMemcpyHostToDevice);
     this->initialWidth = width;
     this->initialHeight = height;
     this->currentWidth = width;
-    this->lab = new CIELAB[width * height];
+    cudaMallocManaged(&this->lab, width * height * sizeof(CIELAB));
     std::fill(this->lab, this->lab + width * height, CIELAB{0, 0, 0});
-    this->gradient = new uint32_t[width * height];
+    cudaMallocManaged(&this->gradient, width * height * sizeof(uint32_t));
     std::fill(this->gradient, this->gradient + width * height, 0);
-    this->seam = new int[height];
+    cudaMallocManaged(&this->seam, height * sizeof(int));
     std::fill(this->seam, this->seam + height, 0);
-    this->buf = new uint32_t[width * height];
-    std::fill(this->buf, this->buf + width * height, 0);
+    cudaMallocManaged(&this->buf, width * height * sizeof(uint32_t));
+    std::fill(this->buf, this->buf + width * height, 0x00FFFFFF);
 
     // convert the pixels to CIELAB
-    for (uint32_t i = 0; i < width * height; i++)
-    {
-      this->lab[i] = rgb2lab({.value = pixels[i]});
-    }
+    rgb2labKernel<<<16, 256>>>((Color *)this->pixels, this->lab, width * height);
+    cudaDeviceSynchronize();
   }
 
   Carver::Carver(uint32_t *pixels, uint32_t width, uint32_t height)
   {
-    this->pixels = new uint32_t[width * height];
-    std::copy(pixels, pixels + width * height, this->pixels);
-    this->mask = new uint8_t[width * height];
+    cudaMallocManaged(&this->pixels, width * height * sizeof(uint32_t));
+    cudaMemcpy(this->pixels, pixels, width * height * sizeof(uint32_t), cudaMemcpyHostToDevice);
+    cudaMallocManaged(&this->mask, width * height * sizeof(uint8_t));
     std::fill(this->mask, this->mask + width * height, 0);
     this->initialWidth = width;
     this->initialHeight = height;
     this->currentWidth = width;
-    this->lab = new CIELAB[width * height];
+    cudaMallocManaged(&this->lab, width * height * sizeof(CIELAB));
     std::fill(this->lab, this->lab + width * height, CIELAB{0, 0, 0});
-    this->gradient = new uint32_t[width * height];
+    cudaMallocManaged(&this->gradient, width * height * sizeof(uint32_t));
     std::fill(this->gradient, this->gradient + width * height, 0);
-    this->seam = new int[height];
+    cudaMallocManaged(&this->seam, height * sizeof(int));
     std::fill(this->seam, this->seam + height, 0);
-    this->buf = new uint32_t[width * height];
-    std::fill(this->buf, this->buf + width * height, 0);
+    cudaMallocManaged(&this->buf, width * height * sizeof(uint32_t));
+    std::fill(this->buf, this->buf + width * height, 0x00FFFFFF);
 
     // convert the pixels to CIELAB
-    for (uint32_t i = 0; i < width * height; i++)
-    {
-      this->lab[i] = rgb2lab({.value = pixels[i]});
-    }
+    rgb2labKernel<<<16, 256>>>((Color *)this->pixels, this->lab, width * height);
+    cudaDeviceSynchronize();
   }
 
   Carver::~Carver()
   {
-    delete[] this->pixels;
-    delete[] this->lab;
-    delete[] this->mask;
-    delete[] this->gradient;
-    delete[] this->seam;
-    delete[] this->buf;
+    cudaFree(this->pixels);
+    cudaFree(this->lab);
+    cudaFree(this->gradient);
+    cudaFree(this->seam);
+    cudaFree(this->buf);
   }
 
-  void Carver::computeInitialGradient()
+  void Carver::computeGradient()
   {
-    for (uint32_t i = 0; i < this->initialWidth; i++)
-    {
-      for (uint32_t j = 0; j < this->initialHeight; j++)
-      {
-        // 3x3 kernel
-        float diffSum = 0;
-        for (int k = -1; k <= 1; k++)
-        {
-          for (int l = -1; l <= 1; l++)
-          {
-            if (i + k >= 0 && i + k < this->initialWidth && j + l >= 0 && j + l < this->initialHeight)
-            {
-              diffSum += distance(this->lab[j * this->initialWidth + i], this->lab[(j + l) * this->initialWidth + i + k]);
-            }
-          }
-        }
-        this->gradient[j * this->initialWidth + i] = (uint32_t)diffSum;
-      }
-    }
-  }
-
-  void Carver::computeNextGradient()
-  {
-    // at this point, the gradient is already computed for most of the image,
-    // so it only needs to be recomputed around where the seam was removed
-
-    for (uint32_t i = 0; i < this->initialHeight; i++)
-    {
-      for (uint32_t j = std::max(0, this->seam[i] - 1); j < this->seam[i]; j++)
-      {
-        // 3x3 kernel
-        float diffSum = 0;
-        for (int k = -1; k <= 1; k++)
-        {
-          for (int l = -1; l <= 1; l++)
-          {
-            if (i + k >= 0 && i + k < this->initialHeight && j + l >= 0 && j + l < this->initialWidth)
-            {
-              diffSum += distance(this->lab[i * this->initialWidth + j], this->lab[(i + k) * this->initialWidth + j + l]);
-            }
-          }
-        }
-        this->gradient[i * this->initialWidth + j] = (uint32_t)diffSum;
-      }
-    }
+    gradientKernel<<<16, 256>>>(this->lab, this->gradient, this->initialWidth, this->initialHeight, this->currentWidth);
+    cudaDeviceSynchronize();
   }
 
   void Carver::computeSeam()
   {
-    static bool first = true;
-
     // compute the first row of the seam
     for (uint32_t i = 0; i < this->currentWidth; i++)
     {
       this->buf[i] = this->gradient[i];
     }
 
-    if (first)
+    // top-down DP approach
+    for (uint32_t i = 1; i < this->initialHeight; i++)
     {
-      // top-down DP approach
-      for (uint32_t i = 1; i < this->initialHeight; i++)
-      {
-        for (uint32_t j = 0; j < this->currentWidth; j++)
-        {
-          uint32_t index = i * this->initialWidth + j;
-          uint32_t prevRow = (i - 1) * this->initialWidth + j;
-
-          if (j == 0)
-          {
-            this->buf[index] = this->gradient[index] + std::min(this->buf[prevRow], this->buf[prevRow + 1]);
-          }
-          else if (j == this->initialWidth - 1)
-          {
-            this->buf[index] = this->gradient[index] + std::min(this->buf[prevRow - 1], this->buf[prevRow]);
-          }
-          else
-          {
-            this->buf[index] = this->gradient[index] + std::min({this->buf[prevRow - 1], this->buf[prevRow], this->buf[prevRow + 1]});
-          }
-        }
-      }
-      first = false;
+      dpRowKernel<<<16, 256>>>(this->gradient, this->buf, this->initialWidth, i, this->currentWidth);
     }
-    else
-    {
-      // we can reuse most of the buffer
-      uint32_t rescanStart = std::max(0, this->seam[0] - 1);
-      uint32_t rescanEnd = std::min((int)this->currentWidth - 1, this->seam[0] + 1);
-
-      // rescan in a cone pattern
-      for (uint32_t i = 1; i < this->initialHeight; i++)
-      {
-        for (uint32_t j = rescanStart; j <= rescanEnd; j++)
-        {
-          uint32_t index = i * this->initialWidth + j;
-          uint32_t prevRow = (i - 1) * this->initialWidth + j;
-
-          if (j == 0)
-          {
-            this->buf[index] = this->gradient[index] + std::min(this->buf[prevRow], this->buf[prevRow + 1]);
-          }
-          else if (j == this->initialWidth - 1)
-          {
-            this->buf[index] = this->gradient[index] + std::min(this->buf[prevRow - 1], this->buf[prevRow]);
-          }
-          else
-          {
-            this->buf[index] = this->gradient[index] + std::min({this->buf[prevRow - 1], this->buf[prevRow], this->buf[prevRow + 1]});
-          }
-        }
-
-        rescanStart = rescanStart > 0 ? rescanStart - 1 : 0;
-        rescanEnd = rescanEnd < this->currentWidth - 1 ? rescanEnd + 1 : this->currentWidth - 1;
-      }
-    }
+    cudaDeviceSynchronize();
 
     // find the minimum value in the last row
     uint32_t minIndex = 0; // this is the index relative to row
-    for (uint32_t i = 1; i < this->currentWidth; i++)
+    for (uint64_t i = 1; i < this->currentWidth; i++)
     {
       if (this->buf[(this->initialHeight - 1) * this->currentWidth + i] < this->buf[(this->initialHeight - 1) * this->currentWidth + minIndex])
       {
@@ -267,15 +235,17 @@ namespace SeamCarver
     this->seam[this->initialHeight - 1] = minIndex;
 
     // backtrack to find the seam
-    for (uint32_t row = this->initialHeight - 2; row > 0; row--)
+    for (int64_t row = this->initialHeight - 2; row >= 0; row--)
     {
-      uint32_t searchMin = minIndex % this->currentWidth == 0 ? 0 : minIndex - 1;
-      uint32_t searchMax = minIndex % this->currentWidth == this->currentWidth - 1 ? this->currentWidth - 1 : minIndex + 1;
+      uint64_t searchMin = minIndex == 0 ? 0 : minIndex - 1;
+      uint64_t searchMax = minIndex == this->currentWidth - 1 ? this->currentWidth - 1 : minIndex + 1;
 
-      for (uint32_t i = searchMin; i <= searchMax; i++)
+      uint32_t minVal = this->buf[row * this->initialWidth + minIndex];
+      for (uint64_t i = searchMin; i <= searchMax; i++)
       {
-        if (this->buf[row * this->currentWidth + i] < this->buf[row * this->currentWidth + minIndex])
+        if (this->buf[row * this->initialWidth + i] < minVal)
         {
+          minVal = this->buf[row * this->initialWidth + i];
           minIndex = i;
         }
       }
@@ -284,41 +254,37 @@ namespace SeamCarver
     }
   }
 
-  void Carver::removeSeam()
+   void Carver::removeSeam()
   {
-    for (uint32_t i = 0; i < this->initialHeight; i++)
-    {
-      uint32_t offset = i * this->initialWidth + this->seam[i];
-      uint32_t coffset = i * this->currentWidth + this->seam[i];
-      uint32_t maskOffset = this->currentWidth - this->seam[i] - 1;
-      memcpy(this->pixels + offset, this->pixels + offset + 1, maskOffset * sizeof(uint32_t));
-      memcpy(this->lab + offset, this->lab + offset + 1, maskOffset * sizeof(CIELAB));
-      memcpy(this->gradient + offset, this->gradient + offset + 1, maskOffset * sizeof(uint32_t));
-      memcpy(this->buf + coffset, this->buf + coffset + 1, maskOffset * sizeof(uint32_t));
-    }
+    removeKernel<<<8, 256>>>(this->pixels, this->lab, this->mask, this->seam, this->initialWidth, this->initialHeight, this->currentWidth);
+
+    cudaDeviceSynchronize();
+
     this->currentWidth--;
   }
 
-  std::shared_ptr<Image> Carver::getGradient()
+  std::unique_ptr<Image> Carver::getGradient()
   {
-    auto img = std::make_shared<Image>(this->currentWidth, this->initialHeight);
-    for (uint32_t i = 0; i < initialHeight; i++)
+    std::unique_ptr<Image> img(new Image(this->currentWidth, this->initialHeight));
+    cudaDeviceSynchronize();
+    for (uint64_t i = 0; i < initialHeight; i++)
     {
-      int offset = i * this->initialWidth;
+      uint64_t offset = i * this->initialWidth;
       std::copy(this->gradient + offset, this->gradient + offset + this->currentWidth, img->pixels + i * this->currentWidth);
     }
+
     return img;
   }
 
-  std::shared_ptr<Image> Carver::getPixels()
+  std::unique_ptr<Image> Carver::getPixels()
   {
-    auto img = std::make_shared<Image>(this->currentWidth, this->initialHeight);
-    for (uint32_t i = 0; i < initialHeight; i++)
+    std::unique_ptr<Image> img(new Image(this->currentWidth, this->initialHeight));
+    for (uint64_t i = 0; i < initialHeight; i++)
     {
-      int offset = i * this->initialWidth;
+      uint64_t offset = i * this->initialWidth;
       std::copy(this->pixels + offset, this->pixels + offset + this->currentWidth, img->pixels + i * this->currentWidth);
     }
-
+    cudaDeviceSynchronize();
     return img;
   }
 
@@ -339,18 +305,33 @@ namespace SeamCarver
       count = this->currentWidth - 1;
     }
 
+    uint64_t duration1Sum = 0;
+    uint64_t duration2Sum = 0;
+    uint64_t duration3Sum = 0;
+
     for (uint32_t i = 0; i < count; i++)
     {
-      if (this->currentWidth == this->initialWidth)
-      {
-        this->computeInitialGradient();
-      }
-      else
-      {
-        this->computeNextGradient();
-      }
+      auto t1 = Clock::now();
+      this->computeGradient();
+      auto t2 = Clock::now();
       this->computeSeam();
+      auto t3 = Clock::now();
       this->removeSeam();
+      auto t4 = Clock::now();
+
+      auto duration1 = std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
+      auto duration2 = std::chrono::duration_cast<std::chrono::microseconds>(t3 - t2).count();
+      auto duration3 = std::chrono::duration_cast<std::chrono::microseconds>(t4 - t3).count();
+
+      duration1Sum += duration1;
+      duration2Sum += duration2;
+      duration3Sum += duration3;
     }
+
+    std::cout << std::setprecision(3) << std::fixed; 
+    std::cout << "computeGradient: " << duration1Sum / (float)count << "us ";
+    std::cout << "computeSeam: " << duration2Sum / (float)count << "us ";
+    std::cout << "removeSeam: " << duration3Sum / (float)count << "us" << std::endl;
+
   }
 }

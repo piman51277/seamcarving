@@ -1,5 +1,10 @@
 #include "../lib.h"
 
+#include <iostream>
+#include <chrono>
+
+typedef std::chrono::high_resolution_clock Clock;
+
 namespace SeamCarver
 {
   float _toLinear(float c)
@@ -91,7 +96,7 @@ namespace SeamCarver
     std::fill(this->buf, this->buf + width * height, 0x00FFFFFF);
 
     // convert the pixels to CIELAB
-    for (uint32_t i = 0; i < width * height; i++)
+    for (uint64_t i = 0; i < width * height; i++)
     {
       this->lab[i] = rgb2lab({.value = pixels[i]});
     }
@@ -116,7 +121,7 @@ namespace SeamCarver
     std::fill(this->buf, this->buf + width * height, 0);
 
     // convert the pixels to CIELAB
-    for (uint32_t i = 0; i < width * height; i++)
+    for (uint64_t i = 0; i < width * height; i++)
     {
       this->lab[i] = rgb2lab({.value = pixels[i]});
     }
@@ -132,11 +137,11 @@ namespace SeamCarver
     delete[] this->buf;
   }
 
-  void Carver::computeInitialGradient()
+  void Carver::computeGradient()
   {
-    for (uint32_t i = 0; i < this->initialWidth; i++)
+    for (uint64_t i = 0; i < this->currentWidth; i++)
     {
-      for (uint32_t j = 0; j < this->initialHeight; j++)
+      for (uint64_t j = 0; j < this->initialHeight; j++)
       {
         // 3x3 kernel
         float diffSum = 0;
@@ -145,35 +150,7 @@ namespace SeamCarver
         {
           for (int l = -1; l <= 1; l++)
           {
-            if (i + k >= 0 && i + k < this->initialWidth && j + l >= 0 && j + l < this->initialHeight)
-            {
-              hits += 1;
-              diffSum += distance(this->lab[j * this->initialWidth + i], this->lab[(j + l) * this->initialWidth + i + k]);
-            }
-          }
-        }
-        this->gradient[j * this->initialWidth + i] = (uint32_t)(diffSum / hits * 150.0);
-      }
-    }
-  }
-
-  void Carver::computeNextGradient()
-  {
-    // at this point, the gradient is already computed for most of the image,
-    // so it only needs to be recomputed around where the seam was removed
-
-    for (uint32_t i = 0; i < this->initialHeight; i++)
-    {
-      for (uint32_t j = std::max(0, this->seam[i] - 1); j < this->seam[i]; j++)
-      {
-        // 3x3 kernel
-        float diffSum = 0;
-        float hits = 0;
-        for (int k = -1; k <= 1; k++)
-        {
-          for (int l = -1; l <= 1; l++)
-          {
-            if (i + k >= 0 && i + k < this->initialWidth && j + l >= 0 && j + l < this->initialHeight)
+            if (i + k >= 0 && i + k < this->currentWidth && j + l >= 0 && j + l < this->initialHeight)
             {
               hits += 1;
               diffSum += distance(this->lab[j * this->initialWidth + i], this->lab[(j + l) * this->initialWidth + i + k]);
@@ -194,12 +171,12 @@ namespace SeamCarver
     }
 
     // top-down DP approach
-    for (uint32_t i = 1; i < this->initialHeight; i++)
+    for (uint64_t i = 1; i < this->initialHeight; i++)
     {
-      for (uint32_t j = 0; j < this->currentWidth; j++)
+      for (uint64_t j = 0; j < this->currentWidth; j++)
       {
-        uint32_t index = i * this->initialWidth + j;
-        uint32_t prevRow = (i - 1) * this->initialWidth + j;
+        uint64_t index = i * this->initialWidth + j;
+        uint64_t prevRow = (i - 1) * this->initialWidth + j;
 
         // if the mask is set, set the value pretty high
         if (this->mask[index] == 1)
@@ -225,7 +202,7 @@ namespace SeamCarver
 
     // find the minimum value in the last row
     uint32_t minIndex = 0; // this is the index relative to row
-    for (uint32_t i = 1; i < this->currentWidth; i++)
+    for (uint64_t i = 1; i < this->currentWidth; i++)
     {
       if (this->buf[(this->initialHeight - 1) * this->currentWidth + i] < this->buf[(this->initialHeight - 1) * this->currentWidth + minIndex])
       {
@@ -235,13 +212,13 @@ namespace SeamCarver
     this->seam[this->initialHeight - 1] = minIndex;
 
     // backtrack to find the seam
-    for (int32_t row = this->initialHeight - 2; row >= 0; row--)
+    for (int64_t row = this->initialHeight - 2; row >= 0; row--)
     {
       uint32_t searchMin = minIndex == 0 ? 0 : minIndex - 1;
       uint32_t searchMax = minIndex == this->currentWidth - 1 ? this->currentWidth - 1 : minIndex + 1;
 
       uint32_t minVal = this->buf[row * this->initialWidth + minIndex];
-      for (uint32_t i = searchMin; i <= searchMax; i++)
+      for (uint64_t i = searchMin; i <= searchMax; i++)
       {
         if (this->buf[row * this->initialWidth + i] < minVal)
         {
@@ -258,8 +235,8 @@ namespace SeamCarver
   {
     for (uint32_t i = 0; i < this->initialHeight; i++)
     {
-      uint32_t offset = i * this->initialWidth + this->seam[i];
-      uint32_t maskOffset = this->currentWidth - this->seam[i] - 1;
+      uint64_t offset = i * this->initialWidth + this->seam[i];
+      uint64_t maskOffset = this->currentWidth - this->seam[i] - 1;
       memcpy(this->pixels + offset, this->pixels + offset + 1, maskOffset * sizeof(uint32_t));
       memcpy(this->lab + offset, this->lab + offset + 1, maskOffset * sizeof(CIELAB));
       memcpy(this->gradient + offset, this->gradient + offset + 1, maskOffset * sizeof(uint32_t));
@@ -276,7 +253,7 @@ namespace SeamCarver
     for (uint32_t i = 0; i < initialHeight; i++)
     {
       int offset = i * this->initialWidth;
-      std::copy(this->buf + offset, this->buf + offset + this->currentWidth, img->pixels + i * this->currentWidth);
+      std::copy(this->gradient + offset, this->gradient + offset + this->currentWidth, img->pixels + i * this->currentWidth);
     }
 
     return img;
@@ -313,16 +290,19 @@ namespace SeamCarver
 
     for (uint32_t i = 0; i < count; i++)
     {
-      if (this->currentWidth == this->initialWidth)
-      {
-        this->computeInitialGradient();
-      }
-      else
-      {
-        this->computeNextGradient();
-      }
+      auto t1 = Clock::now();
+      this->computeGradient();
+      auto t2 = Clock::now();
       this->computeSeam();
+      auto t3 = Clock::now();
       this->removeSeam();
+      auto t4 = Clock::now();
+
+      auto duration1 = std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
+      auto duration2 = std::chrono::duration_cast<std::chrono::microseconds>(t3 - t2).count();
+      auto duration3 = std::chrono::duration_cast<std::chrono::microseconds>(t4 - t3).count();
+
+      std::cout << "Gradient: " << duration1 << "us, Seam: " << duration2 << "us, Remove: " << duration3 << "us" << std::endl;
     }
   }
 }

@@ -44,7 +44,7 @@ int main()
   int width, height;
   uint8_t *pixels = read_png_file("image.png", &width, &height);
   SDL_Init(SDL_INIT_EVERYTHING);
-  SDL_Window *window = SDL_CreateWindow("Seam Carving", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, width * 0.5, height * 0.5, 0);
+  SDL_Window *window = SDL_CreateWindow("Seam Carving", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1900, 1000, 0);
   SDL_Renderer *renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
   SDL_RenderSetLogicalSize(renderer, width, height);
 
@@ -69,7 +69,7 @@ int main()
     }
   }
 
-  SeamCarver::Carver carver(pixels32, mask, width, height);
+  SeamCarver::Carver carver(pixels32, width, height);
   SDL_Rect *dstrect = new SDL_Rect();
 
   while (true)
@@ -95,9 +95,9 @@ int main()
       return 0;
     }
 
-    carver.removeSeams(1);
+    carver.removeSeams(50);
 
-    if (carver.width() < 10)
+    if (carver.width() < 125)
     {
       SDL_DestroyRenderer(renderer);
       SDL_DestroyWindow(window);
@@ -147,6 +147,6 @@ int main()
     // delete gradient
     gradient.reset();
 
-    SDL_Delay(10);
+    SDL_Delay(1);
   }
 }

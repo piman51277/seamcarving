@@ -1,14 +1,14 @@
 export CXXFLAGS="-std=c++20 -Ofast -march=native -flto -funroll-loops -flto -fprefetch-loop-arrays"
-export CUDAFLAGS="-std=c++20 -O3 -arch=sm_86 -diag-suppress 186"
+export CUDAFLAGS="-std=c++20 -O3  -diag-suppress 186"
 export CURRENTDIR=$(pwd)
 
 # lib cpu
-g++ src/lib/cpu/*.cpp $CXXFLAGS -c -o bin/libcpu.o
+g++ src/lib/cpu/carver.cpp $CXXFLAGS -c -o bin/libcpu.o
 ar rcs bin/libcpu.a bin/libcpu.o
 rm bin/libcpu.o
 
 #lib gpu
-nvcc src/lib/gpu/*.cu $CUDAFLAGS -Xcompiler -fPIC -shared -dc -o bin/gpu.o
+nvcc src/lib/gpu/carver.cu $CUDAFLAGS -Xcompiler -fPIC -shared -dc -o bin/gpu.o
 ar rcs bin/libgpu.a bin/gpu.o
 rm bin/gpu.o
 
