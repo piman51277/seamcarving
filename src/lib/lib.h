@@ -45,6 +45,10 @@ namespace SeamCarver
     Image(uint32_t *pixels, uint32_t width, uint32_t height) : pixels(pixels), width(width), height(height) {}
     Image(uint32_t width, uint32_t height) : pixels(new uint32_t[width * height]), width(width), height(height) {}
     Image() : pixels(nullptr), width(0), height(0) {}
+    ~Image()
+    {
+      delete[] pixels;
+    }
   };
 
   class Carver
@@ -93,13 +97,13 @@ namespace SeamCarver
      * Gets the last used gradient of the image.
      * This copies the gradient into a new buffer and returns it.
      */
-    std::shared_ptr<Image> getGradient();
+    std::unique_ptr<Image> getGradient();
 
     /**
      * Gets the current state of the image.
      * This copies the pixels into a new buffer and returns it.
      */
-    std::shared_ptr<Image> getPixels();
+    std::unique_ptr<Image> getPixels();
 
     /**
      * Gets the current width of the image.
