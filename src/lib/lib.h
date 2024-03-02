@@ -23,13 +23,6 @@ namespace SeamCarver
     ARGB argb;
   };
 
-  struct CIELAB
-  {
-    float l;
-    float a;
-    float b;
-  };
-
   struct Image
   {
     uint32_t *pixels;
@@ -49,7 +42,6 @@ namespace SeamCarver
   {
   private:
     uint32_t *pixels; // pixels are stored as ARGB 8888
-    CIELAB *lab;      // pixels are also stored in CIELAB
     uint8_t *mask;    // mask for the pixels
     uint32_t *gradient;
     int *seam;     // the next seam to be removed
