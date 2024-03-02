@@ -72,6 +72,8 @@ __device__ float distance(SeamCarver::CIELAB a, SeamCarver::CIELAB b)
   return sqrt(dl * dl + da * da + db * db);
 }
 
+
+//TODO: redo with shared memory
 __global__ void gradientKernel(SeamCarver::CIELAB *lab, uint32_t *gradient, uint32_t width, uint32_t height, uint32_t opwidth)
 {
   int index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -102,28 +104,34 @@ __global__ void gradientKernel(SeamCarver::CIELAB *lab, uint32_t *gradient, uint
   }
 }
 
-__global__ void dpRowKernel(uint32_t *gradient, uint32_t *buf, uint32_t width, uint32_t row, uint32_t opwidth){
+__global__ void dpKernel(uint32_t *gradient, uint32_t *buf, uint32_t width, uint32_t height, uint32_t opwidth){
   int index = blockIdx.x * blockDim.x + threadIdx.x;
   int stride = blockDim.x * gridDim.x;
 
   for (uint64_t i = index; i < opwidth; i+=stride)
   {
-    uint64_t prevRow = (row - 1) * width + i;
+    for(uint64_t j = 1; j < height; j++){
+      uint64_t prevRow = (j - 1) * width + i;
 
-    if (i == 0)
-    {
-      buf[row * width + i] = gradient[row * width + i] + min(buf[prevRow], buf[prevRow + 1]);
-    }
-    else if (i == opwidth - 1)
-    {
-      buf[row * width + i] = gradient[row * width + i] + min(buf[prevRow - 1], buf[prevRow]);
-    }
-    else
-    {
-      buf[row * width + i] = gradient[row * width + i] + min(min(buf[prevRow - 1], buf[prevRow]), buf[prevRow + 1]);
+      if (i == 0)
+      {
+        buf[j * width + i] = gradient[j * width + i] + min(buf[prevRow], buf[prevRow + 1]);
+      }
+      else if (i == opwidth - 1)
+      {
+        buf[j * width + i] = gradient[j * width + i] + min(buf[prevRow - 1], buf[prevRow]);
+      }
+      else
+      {
+        buf[j * width + i] = gradient[j * width + i] + min(min(buf[prevRow - 1], buf[prevRow]), buf[prevRow + 1]);
+      }
+
+      //sync threads
+      __syncthreads();
     }
   }
 }
+
 
 __global__ void removeKernel(uint32_t *pixels, SeamCarver::CIELAB *lab, uint8_t *mask, int *seam, uint64_t width, uint64_t height, uint64_t currentWidth)
 {
@@ -216,11 +224,7 @@ namespace SeamCarver
       this->buf[i] = this->gradient[i];
     }
 
-    // top-down DP approach
-    for (uint32_t i = 1; i < this->initialHeight; i++)
-    {
-      dpRowKernel<<<16, 256>>>(this->gradient, this->buf, this->initialWidth, i, this->currentWidth);
-    }
+    dpKernel<<<16, 256>>>(this->gradient, this->buf, this->initialWidth, this->initialHeight, this->currentWidth);
     cudaDeviceSynchronize();
 
     // find the minimum value in the last row

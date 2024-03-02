@@ -95,7 +95,7 @@ int main()
       return 0;
     }
 
-    carver.removeSeams(50);
+    carver.removeSeams(5);
 
     if (carver.width() < 125)
     {
