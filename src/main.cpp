@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <SDL2/SDL.h>
 
+#define GRADIENT 0
+
 uint8_t *read_png_file(const char *file_name, int *width, int *height)
 {
   FILE *fp = fopen(file_name, "rb");
@@ -42,7 +44,7 @@ int main()
   int width, height;
   uint8_t *pixels = read_png_file("image.png", &width, &height);
   SDL_Init(SDL_INIT_EVERYTHING);
-  SDL_Window *window = SDL_CreateWindow("Seam Carving", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, width, height, 0);
+  SDL_Window *window = SDL_CreateWindow("Seam Carving", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, width * 0.5, height * 0.5, 0);
   SDL_Renderer *renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
   SDL_RenderSetLogicalSize(renderer, width, height);
 
@@ -54,7 +56,21 @@ int main()
     pixels32[i] |= 0xFF000000;
   }
 
-  SeamCarver::Carver carver(pixels32, width, height);
+  // create a mask
+  uint8_t *mask = new uint8_t[width * height];
+  std::fill(mask, mask + width * height, 0);
+
+  // set a 200x200 square in the middle of the image to 1
+  for (int i = 200; i < 600; i++)
+  {
+    for (int j = 200; j < 600; j++)
+    {
+      mask[i + j * width] = 1;
+    }
+  }
+
+  SeamCarver::Carver carver(pixels32, mask, width, height);
+  SDL_Rect *dstrect = new SDL_Rect();
 
   while (true)
   {
@@ -70,11 +86,44 @@ int main()
       }
     }
 
+    // detect SIGTERM
+    if (SDL_GetKeyboardState(NULL)[SDL_SCANCODE_ESCAPE])
+    {
+      SDL_DestroyRenderer(renderer);
+      SDL_DestroyWindow(window);
+      SDL_Quit();
+      return 0;
+    }
+
     carver.removeSeams(1);
 
-    std::shared_ptr<SeamCarver::Image> gradient = carver.getPixels();
+    if (carver.width() < 10)
+    {
+      SDL_DestroyRenderer(renderer);
+      SDL_DestroyWindow(window);
+      SDL_Quit();
+      return 0;
+    }
+    std::unique_ptr<SeamCarver::Image> gradient = GRADIENT ? carver.getGradient() : carver.getPixels();
     uint32_t *gradientPixels = gradient->pixels;
     uint32_t Iwidth = gradient->width;
+
+    if (GRADIENT)
+    {
+      uint32_t maxVal = 0;
+      for (int i = 0; i < Iwidth * height; i++)
+      {
+        if (gradientPixels[i] != 0xFFFF0000)
+          maxVal = std::max(maxVal, gradientPixels[i]);
+      }
+
+      for (int i = 0; i < Iwidth * height; i++)
+      {
+        float val = (float)gradientPixels[i] / maxVal;
+        if (gradientPixels[i] != 0xFFFF0000)
+          gradientPixels[i] = (255 << 24) | ((int)(val * 255) << 16) | ((int)(val * 255) << 8) | (int)(val * 255);
+      }
+    }
 
     // set background to black
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
@@ -83,7 +132,7 @@ int main()
     // create a texture from the pixel array
     SDL_Texture *texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, Iwidth, height);
     SDL_UpdateTexture(texture, NULL, gradientPixels, Iwidth * sizeof(uint32_t));
-    SDL_Rect *dstrect = new SDL_Rect();
+
     dstrect->x = 0;
     dstrect->y = 0;
     dstrect->w = Iwidth;
@@ -93,9 +142,11 @@ int main()
     SDL_RenderPresent(renderer);
 
     // cleanup
-    delete dstrect;
     SDL_DestroyTexture(texture);
 
-    SDL_Delay(1);
+    // delete gradient
+    gradient.reset();
+
+    SDL_Delay(10);
   }
 }
