@@ -235,10 +235,10 @@ namespace SeamCarver
     this->seam[this->initialHeight - 1] = minIndex;
 
     // backtrack to find the seam
-    for (uint32_t row = this->initialHeight - 2; row > 0; row--)
+    for (int32_t row = this->initialHeight - 2; row >= 0; row--)
     {
-      uint32_t searchMin = minIndex % this->currentWidth == 0 ? 0 : minIndex - 1;
-      uint32_t searchMax = minIndex % this->currentWidth == this->currentWidth - 1 ? this->currentWidth - 1 : minIndex + 1;
+      uint32_t searchMin = minIndex == 0 ? 0 : minIndex - 1;
+      uint32_t searchMax = minIndex == this->currentWidth - 1 ? this->currentWidth - 1 : minIndex + 1;
 
       uint32_t minVal = this->buf[row * this->initialWidth + minIndex];
       for (uint32_t i = searchMin; i <= searchMax; i++)
@@ -269,9 +269,10 @@ namespace SeamCarver
     this->currentWidth--;
   }
 
-  std::shared_ptr<Image> Carver::getGradient()
+  std::unique_ptr<Image> Carver::getGradient()
   {
-    auto img = std::make_shared<Image>(this->currentWidth, this->initialHeight);
+    std::unique_ptr<Image> img(new Image(this->currentWidth, this->initialHeight));
+
     for (uint32_t i = 0; i < initialHeight; i++)
     {
       int offset = i * this->initialWidth;
@@ -281,9 +282,9 @@ namespace SeamCarver
     return img;
   }
 
-  std::shared_ptr<Image> Carver::getPixels()
+  std::unique_ptr<Image> Carver::getPixels()
   {
-    auto img = std::make_shared<Image>(this->currentWidth, this->initialHeight);
+    std::unique_ptr<Image> img(new Image(this->currentWidth, this->initialHeight));
     for (uint32_t i = 0; i < initialHeight; i++)
     {
       int offset = i * this->initialWidth;
