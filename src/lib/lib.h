@@ -51,19 +51,19 @@ namespace SeamCarver
   private:
 // buffers are stored differently on CPU and GPU
 #ifdef __ARCH_CPU__
-    uint32_t *pixels; // pixels are stored as ARGB 8888
-    uint8_t *mask;    // mask for the pixels
-    uint32_t *gradient;
-    int *seam;     // the next seam to be removed
-    uint32_t *buf; // temporary buffer used to avoid reallocation
+    uint32_t *pixels;   // pixels are stored as ARGB 8888
+    uint8_t *mask;      // mask for the pixels
+    uint32_t *gradient; // gradient of the image
+    int *seam;          // the next seam to be removed
+    uint32_t *buf;      // temporary buffer used to avoid reallocation
 
 #endif
 #ifdef __ARCH_GPU__
-    cudaArray_t pixels; // pixels are stored as ARGB 8888
-    cudaArray_t mask;   // mask for the pixels
-    cudaArray_t gradient;
-    int *seam;       // the next seam to be removed
-    cudaArray_t buf; // temporary buffer used to avoid reallocation
+    cudaArray_t pixels;   // pixels are stored as ARGB 8888
+    cudaArray_t mask;     // mask for the pixels
+    cudaArray_t gradient; // gradient of the image
+    int *seam;            // the next seam to be removed
+    cudaArray_t buf;      // temporary buffer used to avoid reallocation
 #endif
 
     // these define the actual size of the pixel array
