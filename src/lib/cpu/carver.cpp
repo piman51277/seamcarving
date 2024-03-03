@@ -10,9 +10,9 @@ namespace SeamCarver
 {
   uint32_t distance(Color a, Color b)
   {
-    uint8_t rd = abs(a.argb.r - b.argb.r);
-    uint8_t gd = abs(a.argb.g - b.argb.g);
-    uint8_t bd = abs(a.argb.b - b.argb.b);
+    uint16_t rd = abs(a.argb.r - b.argb.r);
+    uint16_t gd = abs(a.argb.g - b.argb.g);
+    uint16_t bd = abs(a.argb.b - b.argb.b);
 
     return fsqrt(rd * rd + gd * gd + bd * bd);
   }
