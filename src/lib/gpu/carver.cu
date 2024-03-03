@@ -12,26 +12,32 @@ typedef std::chrono::high_resolution_clock Clock;
 
 __device__ uint32_t distance(SeamCarver::Color a, SeamCarver::Color b)
 {
-  float rd = a.argb.r > b.argb.r ? a.argb.r - b.argb.r : b.argb.r - a.argb.r;
-  float gd = a.argb.g > b.argb.g ? a.argb.g - b.argb.g : b.argb.g - a.argb.g;
-  float bd = a.argb.b > b.argb.b ? a.argb.b - b.argb.b : b.argb.b - a.argb.b;
+  uint8_t rd = abs(a.argb.r - b.argb.r);
+  uint8_t gd = abs(a.argb.g - b.argb.g);
+  uint8_t bd = abs(a.argb.b - b.argb.b);
 
-  return sqrt(rd * rd + gd * gd + bd * bd);
+  return __fsqrt_rn(rd * rd + gd * gd + bd * bd);
 }
 
-//TODO: redo with shared memory
-__global__ void gradientKernel(uint32_t *pixels, uint32_t *gradient, uint32_t width, uint32_t height, uint32_t opwidth)
+// TODO: redo with shared memory
+__global__ void gradientKernel(uint32_t *pixels, uint32_t *gradient, uint8_t *mask, uint32_t width, uint32_t height, uint32_t opwidth)
 {
   int index = blockIdx.x * blockDim.x + threadIdx.x;
   int stride = blockDim.x * gridDim.x;
 
   int space = opwidth * height;
 
-  for (uint64_t q = index; q < space; q+=stride)
+  for (uint64_t q = index; q < space; q += stride)
   {
     int i = q % opwidth;
     int j = q / opwidth;
-    
+
+    if (mask[j * width + i] == 1)
+    {
+      gradient[j * width + i] = 0xFFFF0000;
+      continue;
+    }
+
     // 3x3 kernel
     uint32_t diffSum = 0;
     float hits = 0;
@@ -46,17 +52,19 @@ __global__ void gradientKernel(uint32_t *pixels, uint32_t *gradient, uint32_t wi
         }
       }
     }
-    gradient[j * width + i] = (uint32_t)(diffSum / hits * 150.0);
+    gradient[j * width + i] = (uint32_t)(diffSum / hits);
   }
 }
 
-__global__ void dpKernel(uint32_t *gradient, uint32_t *buf, uint32_t width, uint32_t height, uint32_t opwidth){
+__global__ void dpKernel(uint32_t *gradient, uint32_t *buf, uint32_t width, uint32_t height, uint32_t opwidth)
+{
   int index = blockIdx.x * blockDim.x + threadIdx.x;
   int stride = blockDim.x * gridDim.x;
 
-  for (uint64_t i = index; i < opwidth; i+=stride)
+  for (uint64_t i = index; i < opwidth; i += stride)
   {
-    for(uint64_t j = 1; j < height; j++){
+    for (uint64_t j = 1; j < height; j++)
+    {
       uint64_t prevRow = (j - 1) * width + i;
 
       if (i == 0)
@@ -72,12 +80,11 @@ __global__ void dpKernel(uint32_t *gradient, uint32_t *buf, uint32_t width, uint
         buf[j * width + i] = gradient[j * width + i] + min(min(buf[prevRow - 1], buf[prevRow]), buf[prevRow + 1]);
       }
 
-      //sync threads
+      // sync threads
       __syncthreads();
     }
   }
 }
-
 
 __global__ void removeKernel(uint32_t *pixels, uint8_t *mask, int *seam, uint64_t width, uint64_t height, uint64_t currentWidth)
 {
@@ -86,7 +93,7 @@ __global__ void removeKernel(uint32_t *pixels, uint8_t *mask, int *seam, uint64_
 
   for (uint64_t i = index; i < height; i += stride)
   {
-    //this is faster than memory copy... why????????
+    // this is faster than memory copy... why????????
     uint64_t offset = i * width;
     for (uint64_t j = seam[i]; j < currentWidth - 1; j++)
     {
@@ -96,12 +103,11 @@ __global__ void removeKernel(uint32_t *pixels, uint8_t *mask, int *seam, uint64_
   }
 }
 
-
 namespace SeamCarver
 {
 
   Carver::Carver(uint32_t *pixels, u_int8_t *mask, uint32_t width, uint32_t height)
-  { 
+  {
     cudaMallocManaged(&this->pixels, width * height * sizeof(uint32_t));
     cudaMemcpy(this->pixels, pixels, width * height * sizeof(uint32_t), cudaMemcpyHostToDevice);
     cudaMallocManaged(&this->mask, width * height * sizeof(uint8_t));
@@ -144,7 +150,7 @@ namespace SeamCarver
 
   void Carver::computeGradient()
   {
-    gradientKernel<<<16, 256>>>(this->pixels, this->gradient, this->initialWidth, this->initialHeight, this->currentWidth);
+    gradientKernel<<<256, 1024>>>(this->pixels, this->gradient, this->mask, this->initialWidth, this->initialHeight, this->currentWidth);
     cudaDeviceSynchronize();
   }
 
@@ -156,7 +162,8 @@ namespace SeamCarver
       this->buf[i] = this->gradient[i];
     }
 
-    dpKernel<<<16, 256>>>(this->gradient, this->buf, this->initialWidth, this->initialHeight, this->currentWidth);
+    // fewer thread blocks, less distortion, since this is an approximation
+    dpKernel<<<4, 1024>>>(this->gradient, this->buf, this->initialWidth, this->initialHeight, this->currentWidth);
     cudaDeviceSynchronize();
 
     // find the minimum value in the last row
@@ -190,9 +197,9 @@ namespace SeamCarver
     }
   }
 
-   void Carver::removeSeam()
+  void Carver::removeSeam()
   {
-    removeKernel<<<8, 256>>>(this->pixels,  this->mask, this->seam, this->initialWidth, this->initialHeight, this->currentWidth);
+    removeKernel<<<256, 32>>>(this->pixels, this->mask, this->seam, this->initialWidth, this->initialHeight, this->currentWidth);
     cudaDeviceSynchronize();
 
     this->currentWidth--;
@@ -263,10 +270,9 @@ namespace SeamCarver
       duration3Sum += duration3;
     }
 
-    std::cout << std::setprecision(3) << std::fixed; 
+    std::cout << std::setprecision(3) << std::fixed;
     std::cout << "computeGradient: " << duration1Sum / (float)count << "us ";
     std::cout << "computeSeam: " << duration2Sum / (float)count << "us ";
     std::cout << "removeSeam: " << duration3Sum / (float)count << "us" << std::endl;
-
   }
 }
