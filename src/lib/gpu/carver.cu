@@ -89,9 +89,7 @@ __global__ void gradientKernel(cudaTextureObject_t pixels, cudaSurfaceObject_t g
   }
 }
 
-
-//FIXME: incorrect results around thread block boundaries
-__global__ void dpKernel(cudaTextureObject_t gradient, cudaSurfaceObject_t buf, uint32_t width, uint32_t height, uint32_t opwidth)
+__global__ void dpInitKernel(cudaTextureObject_t gradient, cudaSurfaceObject_t buf, uint32_t width, uint32_t height, uint32_t opwidth)
 {
   int index = blockIdx.x * blockDim.x + threadIdx.x;
   int stride = blockDim.x * gridDim.x;
@@ -101,28 +99,29 @@ __global__ void dpKernel(cudaTextureObject_t gradient, cudaSurfaceObject_t buf, 
   {
     surf2Dwrite(tex2D<uint32_t>(gradient, i, 0), buf, i * sizeof(uint32_t), 0);
   }
+}
 
-  __syncthreads();
+// FIXME: incorrect results around thread block boundaries
+__global__ void dpKernel(cudaTextureObject_t gradient, cudaSurfaceObject_t buf, uint32_t width, uint32_t row, uint32_t opwidth)
+{
+  int index = blockIdx.x * blockDim.x + threadIdx.x;
+  int stride = blockDim.x * gridDim.x;
 
   for (uint64_t i = index; i < opwidth; i += stride)
   {
-    for (uint64_t j = 1; j < height; j++)
+    uint64_t j = row;
+
+    if (i == 0)
     {
-
-      if (i == 0)
-      {
-        surf2Dwrite(tex2D<uint32_t>(gradient, i, j) + min(tex2D<uint32_t>(buf, i, j - 1), tex2D<uint32_t>(buf, i + 1, j - 1)), buf, i * sizeof(uint32_t), j);
-      }
-      else if (i == opwidth - 1)
-      {
-        surf2Dwrite(tex2D<uint32_t>(gradient, i, j) + min(tex2D<uint32_t>(buf, i - 1, j - 1), tex2D<uint32_t>(buf, i, j - 1)), buf, i * sizeof(uint32_t), j);
-      }
-      else
-      {
-        surf2Dwrite(tex2D<uint32_t>(gradient, i, j) + min(min(tex2D<uint32_t>(buf, i - 1, j - 1), tex2D<uint32_t>(buf, i, j - 1)), tex2D<uint32_t>(buf, i + 1, j - 1)), buf, i * sizeof(uint32_t), j);
-      }
-
-      __syncthreads();
+      surf2Dwrite(tex2D<uint32_t>(gradient, i, j) + min(tex2D<uint32_t>(buf, i, j - 1), tex2D<uint32_t>(buf, i + 1, j - 1)), buf, i * sizeof(uint32_t), j);
+    }
+    else if (i == opwidth - 1)
+    {
+      surf2Dwrite(tex2D<uint32_t>(gradient, i, j) + min(tex2D<uint32_t>(buf, i - 1, j - 1), tex2D<uint32_t>(buf, i, j - 1)), buf, i * sizeof(uint32_t), j);
+    }
+    else
+    {
+      surf2Dwrite(tex2D<uint32_t>(gradient, i, j) + min(min(tex2D<uint32_t>(buf, i - 1, j - 1), tex2D<uint32_t>(buf, i, j - 1)), tex2D<uint32_t>(buf, i + 1, j - 1)), buf, i * sizeof(uint32_t), j);
     }
   }
 }
@@ -273,8 +272,11 @@ namespace SeamCarver
     // buf will be written to
     auto buf = createSurface(this->buf);
 
-    // fewer thread blocks, less distortion, since this is an approximation
-    dpKernel<<<256, 256>>>(grad, buf, this->initialWidth, this->initialHeight, this->currentWidth);
+    dpInitKernel<<<16, 256>>>(grad, buf, this->initialWidth, this->initialHeight, this->currentWidth);
+    for (uint32_t i = 1; i < this->initialHeight; i++)
+    {
+      dpKernel<<<256, 32>>>(grad, buf, this->initialWidth, i, this->currentWidth);
+    }
     cudaDeviceSynchronize();
 
     findSeamKernel<<<1, 1>>>(buf, this->seam, this->initialWidth, this->initialHeight, this->currentWidth);
@@ -355,7 +357,7 @@ namespace SeamCarver
       auto t2 = Clock::now();
       this->computeSeam();
       auto t3 = Clock::now();
-      // this->removeSeam();
+      this->removeSeam();
       auto t4 = Clock::now();
 
       auto duration1 = std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
