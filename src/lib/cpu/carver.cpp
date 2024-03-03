@@ -8,74 +8,13 @@ typedef std::chrono::high_resolution_clock Clock;
 
 namespace SeamCarver
 {
-  float _toLinear(float c)
+  uint32_t distance(Color a, Color b)
   {
-    if (c <= 0.04045)
-    {
-      return c / 12.92;
-    }
-    else
-    {
-      return pow((c + 0.055) / 1.055, 2.4);
-    }
-  }
+    uint8_t rd = abs(a.argb.r - b.argb.r);
+    uint8_t gd = abs(a.argb.g - b.argb.g);
+    uint8_t bd = abs(a.argb.b - b.argb.b);
 
-  CIELAB rgb2lab(Color c)
-  {
-    float r = _toLinear(c.argb.r / 255.0);
-    float g = _toLinear(c.argb.g / 255.0);
-    float b = _toLinear(c.argb.b / 255.0);
-
-    float x = r * 0.4124 + g * 0.3576 + b * 0.1805;
-    float y = r * 0.2126 + g * 0.7152 + b * 0.0722;
-    float z = r * 0.0193 + g * 0.1192 + b * 0.9505;
-
-    x /= 0.95047;
-    y /= 1.0;
-    z /= 1.08883;
-
-    if (x > 0.008856)
-    {
-      x = pow(x, 1.0 / 3.0);
-    }
-    else
-    {
-      x = 7.787 * x + 16.0 / 116.0;
-    }
-
-    if (y > 0.008856)
-    {
-      y = pow(y, 1.0 / 3.0);
-    }
-    else
-    {
-      y = 7.787 * y + 16.0 / 116.0;
-    }
-
-    if (z > 0.008856)
-    {
-      z = pow(z, 1.0 / 3.0);
-    }
-    else
-    {
-      z = 7.787 * z + 16.0 / 116.0;
-    }
-
-    CIELAB lab;
-    lab.l = 116.0 * y - 16.0;
-    lab.a = 500.0 * (x - y);
-    lab.b = 200.0 * (y - z);
-
-    return lab;
-  }
-
-  float distance(CIELAB a, CIELAB b)
-  {
-    float dl = a.l - b.l;
-    float da = a.a - b.a;
-    float db = a.b - b.b;
-
-    return sqrt(dl * dl + da * da + db * db);
+    return fsqrt(rd * rd + gd * gd + bd * bd);
   }
 
   Carver::Carver(uint32_t *pixels, u_int8_t *mask, uint32_t width, uint32_t height)
@@ -87,20 +26,12 @@ namespace SeamCarver
     this->initialWidth = width;
     this->initialHeight = height;
     this->currentWidth = width;
-    this->lab = new CIELAB[width * height];
-    std::fill(this->lab, this->lab + width * height, CIELAB{0, 0, 0});
     this->gradient = new uint32_t[width * height];
     std::fill(this->gradient, this->gradient + width * height, 0);
     this->seam = new int[height];
     std::fill(this->seam, this->seam + height, 0);
     this->buf = new uint32_t[width * height];
     std::fill(this->buf, this->buf + width * height, 0x00FFFFFF);
-
-    // convert the pixels to CIELAB
-    for (uint64_t i = 0; i < width * height; i++)
-    {
-      this->lab[i] = rgb2lab({.value = pixels[i]});
-    }
   }
 
   Carver::Carver(uint32_t *pixels, uint32_t width, uint32_t height)
@@ -112,26 +43,17 @@ namespace SeamCarver
     this->initialWidth = width;
     this->initialHeight = height;
     this->currentWidth = width;
-    this->lab = new CIELAB[width * height];
-    std::fill(this->lab, this->lab + width * height, CIELAB{0, 0, 0});
     this->gradient = new uint32_t[width * height];
     std::fill(this->gradient, this->gradient + width * height, 0);
     this->seam = new int[height];
     std::fill(this->seam, this->seam + height, 0);
     this->buf = new uint32_t[width * height];
     std::fill(this->buf, this->buf + width * height, 0);
-
-    // convert the pixels to CIELAB
-    for (uint64_t i = 0; i < width * height; i++)
-    {
-      this->lab[i] = rgb2lab({.value = pixels[i]});
-    }
   }
 
   Carver::~Carver()
   {
     delete[] this->pixels;
-    delete[] this->lab;
     delete[] this->mask;
     delete[] this->gradient;
     delete[] this->seam;
@@ -140,25 +62,62 @@ namespace SeamCarver
 
   void Carver::computeGradient()
   {
-    for (uint64_t i = 0; i < this->currentWidth; i++)
+    static bool first = true;
+
+    if (first)
     {
       for (uint64_t j = 0; j < this->initialHeight; j++)
       {
-        // 3x3 kernel
-        float diffSum = 0;
-        float hits = 0;
-        for (int k = -1; k <= 1; k++)
+        for (uint64_t i = 0; i < this->initialWidth; i++)
         {
-          for (int l = -1; l <= 1; l++)
+
+          // 3x3 kernel
+          float diffSum = 0;
+          float hits = 0;
+          for (int k = -1; k <= 1; k++)
           {
-            if (i + k >= 0 && i + k < this->currentWidth && j + l >= 0 && j + l < this->initialHeight)
+            for (int l = -1; l <= 1; l++)
             {
-              hits += 1;
-              diffSum += distance(this->lab[j * this->initialWidth + i], this->lab[(j + l) * this->initialWidth + i + k]);
+              if (i + k >= 0 && i + k < this->initialWidth && j + l >= 0 && j + l < this->initialHeight)
+              {
+                hits += 1;
+                diffSum += distance((Color)this->pixels[j * this->initialWidth + i], (Color)this->pixels[(j + l) * this->initialWidth + i + k]);
+              }
             }
           }
+          this->gradient[j * this->initialWidth + i] = (uint32_t)(diffSum / hits * 150.0);
         }
-        this->gradient[j * this->initialWidth + i] = (uint32_t)(diffSum / hits * 150.0);
+      }
+      first = false;
+    }
+    else
+    {
+      for (uint64_t j = 0; j < this->initialHeight; j++)
+      {
+        // get the seam at this row
+        uint32_t seamIndex = this->seam[j];
+        uint32_t minIndex = seamIndex <= 5 ? 0 : seamIndex - 5;
+        uint32_t maxIndex = seamIndex + 5 >= this->currentWidth ? this->currentWidth : seamIndex + 5;
+
+        for (uint64_t i = minIndex; i < maxIndex; i++)
+        {
+
+          // 3x3 kernel
+          float diffSum = 0;
+          float hits = 0;
+          for (int k = -1; k <= 1; k++)
+          {
+            for (int l = -1; l <= 1; l++)
+            {
+              if (i + k >= 0 && i + k < this->currentWidth && j + l >= 0 && j + l < this->initialHeight)
+              {
+                hits += 1;
+                diffSum += distance((Color)this->pixels[j * this->initialWidth + i], (Color)this->pixels[(j + l) * this->initialWidth + i + k]);
+              }
+            }
+          }
+          this->gradient[j * this->initialWidth + i] = (uint32_t)(diffSum / hits * 150.0);
+        }
       }
     }
   }
@@ -232,9 +191,7 @@ namespace SeamCarver
       uint64_t offset = i * this->initialWidth + this->seam[i];
       uint64_t maskOffset = this->currentWidth - this->seam[i] - 1;
       memcpy(this->pixels + offset, this->pixels + offset + 1, maskOffset * sizeof(uint32_t));
-      memcpy(this->lab + offset, this->lab + offset + 1, maskOffset * sizeof(CIELAB));
       memcpy(this->gradient + offset, this->gradient + offset + 1, maskOffset * sizeof(uint32_t));
-      memcpy(this->buf + offset, this->buf + offset + 1, maskOffset * sizeof(uint32_t));
       memcpy(this->mask + offset, this->mask + offset + 1, maskOffset * sizeof(uint8_t));
     }
     this->currentWidth--;
