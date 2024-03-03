@@ -101,7 +101,6 @@ __global__ void dpInitKernel(cudaTextureObject_t gradient, cudaSurfaceObject_t b
   }
 }
 
-// FIXME: incorrect results around thread block boundaries
 __global__ void dpKernel(cudaTextureObject_t gradient, cudaSurfaceObject_t buf, uint32_t width, uint32_t row, uint32_t opwidth)
 {
   int index = blockIdx.x * blockDim.x + threadIdx.x;
