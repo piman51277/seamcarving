@@ -179,13 +179,6 @@ namespace SeamCarver
         uint64_t index = i * this->initialWidth + j;
         uint64_t prevRow = (i - 1) * this->initialWidth + j;
 
-        // if the mask is set, set the value pretty high
-        if (this->mask[index] == 1)
-        {
-          this->buf[index] += 0x000FFFFF;
-          continue;
-        }
-
         if (j == 0)
         {
           this->buf[index] = this->gradient[index] + std::min(this->buf[prevRow], this->buf[prevRow + 1]);

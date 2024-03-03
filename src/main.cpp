@@ -1,3 +1,4 @@
+#define __ARCH_CPU__
 #include "lib/lib.h"
 #include <iostream>
 #include <png.h>
@@ -42,7 +43,7 @@ uint8_t *read_png_file(const char *file_name, int *width, int *height)
 int main()
 {
   int width, height;
-  uint8_t *pixels = read_png_file("image.png", &width, &height);
+  uint8_t *pixels = read_png_file("/home/piman/data/Programming/Projects/2024/seamcarving/image.png", &width, &height);
   SDL_Init(SDL_INIT_EVERYTHING);
   SDL_Window *window = SDL_CreateWindow("Seam Carving", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1900, 1000, 0);
   SDL_Renderer *renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
@@ -147,6 +148,6 @@ int main()
     // delete gradient
     gradient.reset();
 
-    SDL_Delay(1);
+    SDL_Delay(60);
   }
 }

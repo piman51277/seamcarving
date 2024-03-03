@@ -6,6 +6,14 @@
 #include <algorithm>
 #include <cstring>
 
+#ifdef __ARCH_GPU__
+#include <cuda_runtime.h>
+#include <device_launch_parameters.h>
+#include <device_atomic_functions.h>
+#include <cuda_fp16.h>
+#include <texture_indirect_functions.h>
+#endif
+
 namespace SeamCarver
 {
 
