@@ -1,3 +1,4 @@
+#define __ARCH_CPU__
 #include "../lib.h"
 
 #include <iostream>
