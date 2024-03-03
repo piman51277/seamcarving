@@ -127,34 +127,68 @@ __global__ void dpKernel(cudaTextureObject_t gradient, cudaSurfaceObject_t buf, 
 
 __global__ void findSeamKernel(cudaSurfaceObject_t buf, int *seam, uint32_t width, uint32_t height, uint32_t opwidth)
 {
-  //  find the minimum value in the last row
-  uint32_t minIndex = 0; // this is the index relative to row
-  for (uint64_t i = 1; i < opwidth; i++)
+
+  // this should always execute within one thread block
+  uint32_t ind = threadIdx.x;
+  uint32_t stride = blockDim.x;
+  __shared__ uint32_t minIndex[512];
+  __shared__ uint32_t minVal[512];
+
+  // find the minimum value in the last row
+  uint32_t locMin = 0;
+  uint32_t locMinVal = tex2D<uint32_t>(buf, 0, height - 1);
+  for (uint64_t i = 1; i < opwidth; i += stride)
   {
-    if (tex2D<uint32_t>(buf, i, height - 1) < tex2D<uint32_t>(buf, minIndex, height - 1))
+    uint32_t val = tex2D<uint32_t>(buf, i, height - 1);
+    if (val < locMinVal)
     {
-      minIndex = i;
+      locMinVal = val;
+      locMin = i;
     }
   }
-  seam[height - 1] = minIndex;
+  minIndex[ind] = locMin;
+  minVal[ind] = locMinVal;
+
+  __syncthreads();
+
+  // parallel reduction to find the minimum value in the last row
+  for (uint32_t s = stride / 2; s > 0; s >>= 1)
+  {
+    if (ind < s)
+    {
+      if (minVal[ind + s] < minVal[ind])
+      {
+        minVal[ind] = minVal[ind + s];
+        minIndex[ind] = minIndex[ind + s];
+      }
+    }
+    __syncthreads();
+  }
+
+  // from now on, it's a single thread
+  if (ind != 0)
+    return;
+  seam[height - 1] = minIndex[0];
 
   // backtrack to find the seam
+  uint32_t searchIndex = seam[height - 1];
   for (int64_t row = height - 2; row >= 0; row--)
   {
-    uint64_t searchMin = minIndex == 0 ? 0 : minIndex - 1;
-    uint64_t searchMax = minIndex == opwidth - 1 ? opwidth - 1 : minIndex + 1;
+    uint64_t searchMin = searchIndex == 0 ? 0 : searchIndex - 1;
+    uint64_t searchMax = searchIndex == opwidth - 1 ? opwidth - 1 : searchIndex + 1;
 
-    uint32_t minVal = tex2D<uint32_t>(buf, minIndex, row);
+    uint32_t minVal = tex2D<uint32_t>(buf, searchIndex, row);
     for (uint64_t i = searchMin; i <= searchMax; i++)
     {
-      if (tex2D<uint32_t>(buf, i, row) < minVal)
+      uint32_t val = tex2D<uint32_t>(buf, i, row);
+      if (val < minVal)
       {
-        minVal = tex2D<uint32_t>(buf, i, row);
-        minIndex = i;
+        minVal = val;
+        searchIndex = i;
       }
     }
 
-    seam[row] = minIndex;
+    seam[row] = searchIndex;
   }
 }
 
@@ -278,7 +312,7 @@ namespace SeamCarver
     }
     cudaDeviceSynchronize();
 
-    findSeamKernel<<<1, 1>>>(buf, this->seam, this->initialWidth, this->initialHeight, this->currentWidth);
+    findSeamKernel<<<1, 256, (256 + 256) * sizeof(uint32_t)>>>(buf, this->seam, this->initialWidth, this->initialHeight, this->currentWidth);
     cudaDeviceSynchronize();
 
     cudaDestroyTextureObject(grad);
