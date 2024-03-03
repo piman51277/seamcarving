@@ -1,5 +1,13 @@
-export CXXFLAGS="-std=c++20 -Ofast -march=native -flto -funroll-loops -flto -fprefetch-loop-arrays"
-export CUDAFLAGS="-std=c++20 -O3  -diag-suppress 186"
+export DEBUG=1
+
+if [ $DEBUG -eq 1 ]; then
+    export CXXFLAGS="-std=c++20 -g -Og"
+    export CUDAFLAGS="-std=c++20  -g -diag-suppress 186"
+else
+    export CXXFLAGS="-std=c++20 -Ofast -march=native -flto -funroll-loops -flto -fprefetch-loop-arrays"
+    export CUDAFLAGS="-std=c++20  -O3 -diag-suppress 186"
+fi
+
 export CURRENTDIR=$(pwd)
 
 # lib cpu
