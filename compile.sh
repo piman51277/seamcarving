@@ -1,4 +1,4 @@
-export DEBUG=1
+export DEBUG=0
 
 if [ $DEBUG -eq 1 ]; then
     export CXXFLAGS="-std=c++20 -g -Og"
