@@ -1,11 +1,6 @@
 #define __ARCH_CPU__
 #include "../lib.h"
 
-#include <iostream>
-#include <chrono>
-
-typedef std::chrono::high_resolution_clock Clock;
-
 namespace SeamCarver
 {
   uint32_t distance(Color a, Color b)
@@ -241,19 +236,9 @@ namespace SeamCarver
 
     for (uint32_t i = 0; i < count; i++)
     {
-      auto t1 = Clock::now();
       this->computeGradient();
-      auto t2 = Clock::now();
       this->computeSeam();
-      auto t3 = Clock::now();
       this->removeSeam();
-      auto t4 = Clock::now();
-
-      auto duration1 = std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
-      auto duration2 = std::chrono::duration_cast<std::chrono::microseconds>(t3 - t2).count();
-      auto duration3 = std::chrono::duration_cast<std::chrono::microseconds>(t4 - t3).count();
-
-      std::cout << "Gradient: " << duration1 << "us, Seam: " << duration2 << "us, Remove: " << duration3 << "us" << std::endl;
     }
   }
 }

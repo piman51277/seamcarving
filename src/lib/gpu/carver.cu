@@ -1,12 +1,6 @@
 #define __ARCH_GPU__
 #include "../lib.h"
 
-#include <iostream>
-#include <iomanip>
-#include <chrono>
-
-typedef std::chrono::high_resolution_clock Clock;
-
 cudaTextureObject_t createTexture(cudaArray *cuArray)
 {
   // Create a cudaResourceDesc
@@ -379,32 +373,11 @@ namespace SeamCarver
       count = this->currentWidth - 1;
     }
 
-    uint64_t duration1Sum = 0;
-    uint64_t duration2Sum = 0;
-    uint64_t duration3Sum = 0;
-
     for (uint32_t i = 0; i < count; i++)
     {
-      auto t1 = Clock::now();
       this->computeGradient();
-      auto t2 = Clock::now();
       this->computeSeam();
-      auto t3 = Clock::now();
       this->removeSeam();
-      auto t4 = Clock::now();
-
-      auto duration1 = std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
-      auto duration2 = std::chrono::duration_cast<std::chrono::microseconds>(t3 - t2).count();
-      auto duration3 = std::chrono::duration_cast<std::chrono::microseconds>(t4 - t3).count();
-
-      duration1Sum += duration1;
-      duration2Sum += duration2;
-      duration3Sum += duration3;
     }
-
-    std::cout << std::setprecision(3) << std::fixed;
-    std::cout << "computeGradient: " << duration1Sum / (float)count << "us ";
-    std::cout << "computeSeam: " << duration2Sum / (float)count << "us ";
-    std::cout << "removeSeam: " << duration3Sum / (float)count << "us" << std::endl;
   }
 }
