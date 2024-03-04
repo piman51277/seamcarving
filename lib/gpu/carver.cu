@@ -37,7 +37,7 @@ cudaSurfaceObject_t createSurface(cudaArray *cuArray)
   return surfObj;
 }
 
-__device__ uint32_t distance(SeamCarver::Color a, SeamCarver::Color b)
+__device__ uint32_t distance(Color a, Color b)
 {
   uint8_t rd = abs(a.argb.r - b.argb.r);
   uint8_t gd = abs(a.argb.g - b.argb.g);
@@ -75,7 +75,7 @@ __global__ void gradientKernel(cudaTextureObject_t pixels, cudaSurfaceObject_t g
         if (i + k >= 0 && i + k < opwidth && j + l >= 0 && j + l < height)
         {
           hits += 1;
-          diffSum += distance((SeamCarver::Color)tex2D<uint32_t>(pixels, i, j), (SeamCarver::Color)tex2D<uint32_t>(pixels, i + k, j + l));
+          diffSum += distance((Color)tex2D<uint32_t>(pixels, i, j), (Color)tex2D<uint32_t>(pixels, i + k, j + l));
         }
       }
     }
@@ -215,169 +215,159 @@ __global__ void copySurfaceArrKernel(cudaSurfaceObject_t src, uint32_t *dst, uin
   }
 }
 
-namespace SeamCarver
+Carver::Carver(uint32_t *pixels, u_int8_t *mask, uint32_t width, uint32_t height)
 {
+  cudaChannelFormatDesc channelDescUint32 = cudaCreateChannelDesc(32, 0, 0, 0, cudaChannelFormatKindUnsigned);
+  cudaMallocArray(&this->pixels, &channelDescUint32, width, height);
+  cudaMemcpy2DToArray(this->pixels, 0, 0, pixels, width * sizeof(uint32_t), width * sizeof(uint32_t), height, cudaMemcpyHostToDevice);
 
-  Carver::Carver(uint32_t *pixels, u_int8_t *mask, uint32_t width, uint32_t height)
+  cudaChannelFormatDesc channelDescMask = cudaCreateChannelDesc(8, 0, 0, 0, cudaChannelFormatKindUnsigned);
+  cudaMallocArray(&this->mask, &channelDescMask, width, height);
+  cudaMemcpy2DToArray(this->mask, 0, 0, mask, width * sizeof(uint8_t), width * sizeof(uint8_t), height, cudaMemcpyHostToDevice);
+
+  this->initialWidth = width;
+  this->initialHeight = height;
+  this->currentWidth = width;
+
+  // we don't need to fill these with 0s because we will overwrite
+  cudaMallocArray(&this->gradient, &channelDescUint32, width, height);
+  cudaMallocManaged(&this->seam, height * sizeof(int));
+  cudaMallocArray(&this->buf, &channelDescUint32, width, height);
+}
+
+Carver::Carver(uint32_t *pixels, uint32_t width, uint32_t height)
+{
+  cudaChannelFormatDesc channelDescUint32 = cudaCreateChannelDesc<uint32_t>();
+  cudaMallocArray(&this->pixels, &channelDescUint32, width, height, cudaArraySurfaceLoadStore);
+  cudaMemcpy2DToArray(this->pixels, 0, 0, pixels, width * sizeof(uint32_t), width * sizeof(uint32_t), height, cudaMemcpyHostToDevice);
+
+  this->initialWidth = width;
+  this->initialHeight = height;
+  this->currentWidth = width;
+
+  cudaChannelFormatDesc channelDescMask = cudaCreateChannelDesc(8, 0, 0, 0, cudaChannelFormatKindUnsigned);
+  cudaMallocArray(&this->mask, &channelDescMask, width, height, cudaArraySurfaceLoadStore);
+
+  // idk why we have to go through this song and dance but oh well
+  uint32_t *mask;
+  cudaMalloc(&mask, width * height * sizeof(uint8_t));
+  cudaMemset(mask, 0, width * height * sizeof(uint8_t));
+  cudaMemcpy2DToArray(this->mask, 0, 0, mask, width * sizeof(uint8_t), width * sizeof(uint8_t), height, cudaMemcpyHostToDevice);
+  cudaFree(mask);
+
+  // we don't need to fill these with 0s because we will overwrite
+  cudaMallocArray(&this->gradient, &channelDescUint32, width, height, cudaArraySurfaceLoadStore);
+  cudaMallocManaged(&this->seam, height * sizeof(int));
+  cudaMallocArray(&this->buf, &channelDescUint32, width, height, cudaArraySurfaceLoadStore);
+}
+
+Carver::~Carver()
+{
+  cudaFree(this->pixels);
+  cudaFree(this->gradient);
+  cudaFree(this->seam);
+  cudaFree(this->buf);
+}
+
+void Carver::computeGradient()
+{
+  // pixels will be read-only for gradient kernel
+  auto pix = createTexture(this->pixels);
+
+  // mask will be read-only for gradient kernel
+  auto mask = createTexture(this->mask);
+
+  // gradient will be written to
+  auto grad = createSurface(this->gradient);
+
+  gradientKernel<<<256, 1024>>>(pix, grad, mask, this->initialWidth, this->initialHeight, this->currentWidth);
+  cudaDeviceSynchronize();
+
+  cudaDestroyTextureObject(pix);
+  cudaDestroyTextureObject(mask);
+  cudaDestroySurfaceObject(grad);
+}
+
+void Carver::computeSeam()
+{
+  // gradient will be read-only for dp kernel
+  auto grad = createTexture(this->gradient);
+
+  // buf will be written to
+  auto buf = createSurface(this->buf);
+
+  dpInitKernel<<<16, 256>>>(grad, buf, this->initialWidth, this->initialHeight, this->currentWidth);
+  for (uint32_t i = 1; i < this->initialHeight; i++)
   {
-    cudaChannelFormatDesc channelDescUint32 = cudaCreateChannelDesc(32, 0, 0, 0, cudaChannelFormatKindUnsigned);
-    cudaMallocArray(&this->pixels, &channelDescUint32, width, height);
-    cudaMemcpy2DToArray(this->pixels, 0, 0, pixels, width * sizeof(uint32_t), width * sizeof(uint32_t), height, cudaMemcpyHostToDevice);
+    dpKernel<<<256, 32>>>(grad, buf, this->initialWidth, i, this->currentWidth);
+  }
+  cudaDeviceSynchronize();
 
-    cudaChannelFormatDesc channelDescMask = cudaCreateChannelDesc(8, 0, 0, 0, cudaChannelFormatKindUnsigned);
-    cudaMallocArray(&this->mask, &channelDescMask, width, height);
-    cudaMemcpy2DToArray(this->mask, 0, 0, mask, width * sizeof(uint8_t), width * sizeof(uint8_t), height, cudaMemcpyHostToDevice);
+  findSeamKernel<<<1, 256, (256 + 256) * sizeof(uint32_t)>>>(buf, this->seam, this->initialWidth, this->initialHeight, this->currentWidth);
+  cudaDeviceSynchronize();
 
-    this->initialWidth = width;
-    this->initialHeight = height;
-    this->currentWidth = width;
+  cudaDestroyTextureObject(grad);
+  cudaDestroySurfaceObject(buf);
+}
 
-    // we don't need to fill these with 0s because we will overwrite
-    cudaMallocArray(&this->gradient, &channelDescUint32, width, height);
-    cudaMallocManaged(&this->seam, height * sizeof(int));
-    cudaMallocArray(&this->buf, &channelDescUint32, width, height);
+void Carver::removeSeam()
+{
+  auto pix = createSurface(this->pixels);
+  auto mask = createTexture(this->mask);
+
+  removeKernel<<<256, 32>>>(pix, mask, this->seam, this->initialWidth, this->initialHeight, this->currentWidth);
+  cudaDeviceSynchronize();
+
+  this->currentWidth--;
+  cudaDestroySurfaceObject(pix);
+  cudaDestroyTextureObject(mask);
+}
+
+void Carver::getGradient(uint32_t *outbuf)
+{
+  auto pix = createSurface(this->buf);
+  uint32_t *pixels;
+  cudaMallocManaged(&pixels, this->currentWidth * this->initialHeight * sizeof(uint32_t));
+  copySurfaceArrKernel<<<64, 64>>>(pix, pixels, this->currentWidth, this->initialHeight, this->currentWidth);
+  cudaDestroyTextureObject(pix);
+  cudaDeviceSynchronize();
+  std::copy(pixels, pixels + this->currentWidth * this->initialHeight, outbuf);
+  cudaFree(pixels);
+}
+
+void Carver::getPixels(uint32_t *outbuf)
+{
+  auto pix = createSurface(this->pixels);
+  uint32_t *pixels;
+  cudaMallocManaged(&pixels, this->currentWidth * this->initialHeight * sizeof(uint32_t));
+  copySurfaceArrKernel<<<64, 64>>>(pix, pixels, this->currentWidth, this->initialHeight, this->currentWidth);
+  cudaDestroyTextureObject(pix);
+  cudaDeviceSynchronize();
+  std::copy(pixels, pixels + this->currentWidth * this->initialHeight, outbuf);
+  cudaFree(pixels);
+}
+
+uint32_t Carver::width()
+{
+  return this->currentWidth;
+}
+
+uint32_t Carver::height()
+{
+  return this->initialHeight;
+}
+
+void Carver::removeSeams(uint32_t count)
+{
+  if (this->currentWidth - count < 0)
+  {
+    count = this->currentWidth - 1;
   }
 
-  Carver::Carver(uint32_t *pixels, uint32_t width, uint32_t height)
+  for (uint32_t i = 0; i < count; i++)
   {
-    cudaChannelFormatDesc channelDescUint32 = cudaCreateChannelDesc<uint32_t>();
-    cudaMallocArray(&this->pixels, &channelDescUint32, width, height, cudaArraySurfaceLoadStore);
-    cudaMemcpy2DToArray(this->pixels, 0, 0, pixels, width * sizeof(uint32_t), width * sizeof(uint32_t), height, cudaMemcpyHostToDevice);
-
-    this->initialWidth = width;
-    this->initialHeight = height;
-    this->currentWidth = width;
-
-    cudaChannelFormatDesc channelDescMask = cudaCreateChannelDesc(8, 0, 0, 0, cudaChannelFormatKindUnsigned);
-    cudaMallocArray(&this->mask, &channelDescMask, width, height, cudaArraySurfaceLoadStore);
-
-    // idk why we have to go through this song and dance but oh well
-    uint32_t *mask;
-    cudaMalloc(&mask, width * height * sizeof(uint8_t));
-    cudaMemset(mask, 0, width * height * sizeof(uint8_t));
-    cudaMemcpy2DToArray(this->mask, 0, 0, mask, width * sizeof(uint8_t), width * sizeof(uint8_t), height, cudaMemcpyHostToDevice);
-    cudaFree(mask);
-
-    // we don't need to fill these with 0s because we will overwrite
-    cudaMallocArray(&this->gradient, &channelDescUint32, width, height, cudaArraySurfaceLoadStore);
-    cudaMallocManaged(&this->seam, height * sizeof(int));
-    cudaMallocArray(&this->buf, &channelDescUint32, width, height, cudaArraySurfaceLoadStore);
-  }
-
-  Carver::~Carver()
-  {
-    cudaFree(this->pixels);
-    cudaFree(this->gradient);
-    cudaFree(this->seam);
-    cudaFree(this->buf);
-  }
-
-  void Carver::computeGradient()
-  {
-    // pixels will be read-only for gradient kernel
-    auto pix = createTexture(this->pixels);
-
-    // mask will be read-only for gradient kernel
-    auto mask = createTexture(this->mask);
-
-    // gradient will be written to
-    auto grad = createSurface(this->gradient);
-
-    gradientKernel<<<256, 1024>>>(pix, grad, mask, this->initialWidth, this->initialHeight, this->currentWidth);
-    cudaDeviceSynchronize();
-
-    cudaDestroyTextureObject(pix);
-    cudaDestroyTextureObject(mask);
-    cudaDestroySurfaceObject(grad);
-  }
-
-  void Carver::computeSeam()
-  {
-    // gradient will be read-only for dp kernel
-    auto grad = createTexture(this->gradient);
-
-    // buf will be written to
-    auto buf = createSurface(this->buf);
-
-    dpInitKernel<<<16, 256>>>(grad, buf, this->initialWidth, this->initialHeight, this->currentWidth);
-    for (uint32_t i = 1; i < this->initialHeight; i++)
-    {
-      dpKernel<<<256, 32>>>(grad, buf, this->initialWidth, i, this->currentWidth);
-    }
-    cudaDeviceSynchronize();
-
-    findSeamKernel<<<1, 256, (256 + 256) * sizeof(uint32_t)>>>(buf, this->seam, this->initialWidth, this->initialHeight, this->currentWidth);
-    cudaDeviceSynchronize();
-
-    cudaDestroyTextureObject(grad);
-    cudaDestroySurfaceObject(buf);
-  }
-
-  void Carver::removeSeam()
-  {
-    auto pix = createSurface(this->pixels);
-    auto mask = createTexture(this->mask);
-
-    removeKernel<<<256, 32>>>(pix, mask, this->seam, this->initialWidth, this->initialHeight, this->currentWidth);
-    cudaDeviceSynchronize();
-
-    this->currentWidth--;
-    cudaDestroySurfaceObject(pix);
-    cudaDestroyTextureObject(mask);
-  }
-
-  std::unique_ptr<Image> Carver::getGradient()
-  {
-    auto pix = createSurface(this->buf);
-    uint32_t *pixels;
-    cudaMallocManaged(&pixels, this->currentWidth * this->initialHeight * sizeof(uint32_t));
-    copySurfaceArrKernel<<<64, 64>>>(pix, pixels, this->currentWidth, this->initialHeight, this->currentWidth);
-    cudaDestroyTextureObject(pix);
-    cudaDeviceSynchronize();
-
-    std::unique_ptr<Image> img(new Image(this->currentWidth, this->initialHeight));
-    std::copy(pixels, pixels + this->currentWidth * this->initialHeight, img->pixels);
-    cudaFree(pixels);
-    return img;
-  }
-
-  std::unique_ptr<Image> Carver::getPixels()
-  {
-    auto pix = createSurface(this->pixels);
-    uint32_t *pixels;
-    cudaMallocManaged(&pixels, this->currentWidth * this->initialHeight * sizeof(uint32_t));
-    copySurfaceArrKernel<<<64, 64>>>(pix, pixels, this->currentWidth, this->initialHeight, this->currentWidth);
-    cudaDestroyTextureObject(pix);
-    cudaDeviceSynchronize();
-
-    std::unique_ptr<Image> img(new Image(this->currentWidth, this->initialHeight));
-    std::copy(pixels, pixels + this->currentWidth * this->initialHeight, img->pixels);
-    cudaFree(pixels);
-    return img;
-  }
-
-  uint32_t Carver::width()
-  {
-    return this->currentWidth;
-  }
-
-  uint32_t Carver::height()
-  {
-    return this->initialHeight;
-  }
-
-  void Carver::removeSeams(uint32_t count)
-  {
-    if (this->currentWidth - count < 0)
-    {
-      count = this->currentWidth - 1;
-    }
-
-    for (uint32_t i = 0; i < count; i++)
-    {
-      this->computeGradient();
-      this->computeSeam();
-      this->removeSeam();
-    }
+    this->computeGradient();
+    this->computeSeam();
+    this->removeSeam();
   }
 }
