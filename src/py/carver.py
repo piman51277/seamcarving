@@ -8,6 +8,7 @@ lib = cdll.LoadLibrary('./bin/libgpu.so')
 # uint32_t width;
 # uint32_t height;
 lib.Carver_new.argtypes = [POINTER(c_uint32), c_uint32, c_uint32]
+lib.Carver_new.restype = c_void_p
 
 # lib.Carver_new_mask makes the following:
 # uint32_t *data;
@@ -16,6 +17,7 @@ lib.Carver_new.argtypes = [POINTER(c_uint32), c_uint32, c_uint32]
 # uint32_t height;
 lib.Carver_new_mask.argtypes = [
     POINTER(c_uint32), POINTER(c_uint8), c_uint32, c_uint32]
+lib.Carver_new_mask.restype = c_void_p
 
 # lib.Carver_delete takes the following:
 # void *carver;
@@ -47,12 +49,12 @@ class Carver(object):
         if mask is not None:
             self.mask = mask
             self.carver = lib.Carver_new_mask(
-                data.ctypes.data_as(POINTER(c_uint32)), mask.ctypes.data_as(POINTER(c_uint8)), width, height)
+                self.data.ctypes.data_as(POINTER(c_uint32)), self.mask.ctypes.data_as(POINTER(c_uint8)), width, height)
         else:
             self.carver = lib.Carver_new(
-                data.ctypes.data_as(POINTER(c_uint32)), width, height)
+                self.data.ctypes.data_as(POINTER(c_uint32)), width, height)
 
-    def __del__(self):
+    def delete(self):
         lib.Carver_delete(self.carver)
 
     def carve(self, numSeams: int):
