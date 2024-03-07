@@ -4,3 +4,4 @@ bin
 *.jpg
 **/__pycache__
 **/*.pyc
+py-env
