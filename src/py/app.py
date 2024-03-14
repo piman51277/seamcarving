@@ -6,6 +6,14 @@ import time
 
 app = Flask(__name__)
 
+# set CORS to allow all
+
+
+@app.after_request
+def after_request(response):
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    return response
+
 
 @app.route('/api/carve', methods=['POST'])
 def carve_handler():
