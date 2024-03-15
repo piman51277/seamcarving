@@ -267,6 +267,7 @@ Carver::~Carver()
   cudaFree(this->gradient);
   cudaFree(this->seam);
   cudaFree(this->buf);
+  cudaFree(this->mask);
 }
 
 void Carver::computeGradient()
