@@ -54,6 +54,9 @@ class Carver(object):
             self.carver = lib.Carver_new(
                 self.data.ctypes.data_as(POINTER(c_uint32)), width, height)
 
+    def __del__(self):
+        self.delete()
+
     def delete(self):
         lib.Carver_delete(self.carver)
 

@@ -17,9 +17,10 @@ def after_request(response):
 
 @app.route('/api/carve', methods=['POST'])
 def carve_handler():
-
     # extract the binary data from the request
+    print("Starting data read...")
     data: bytes = request.get_data(cache=False)
+    print("Data read complete...")
 
     # read the first 4 bytes to determine how many seams to carve
     num_seams = int.from_bytes(data[:4], byteorder='little')
@@ -31,11 +32,14 @@ def carve_handler():
         return "Invalid number of seams", 400
 
     # create a Carver object
-    carver = Carver(pixel_buf, width, height)
+    if (mask_buf is not None):
+        carver = Carver(pixel_buf, width, height, mask_buf)
+        print("Mask present")
+    else:
+        carver = Carver(pixel_buf, width, height)
+        print("No mask")
     carver.carve(num_seams)
     resultBuf = carver.getData()
-
-    carver.delete()
 
     # write the result back to the client
     return write_image(width - num_seams, height, resultBuf)

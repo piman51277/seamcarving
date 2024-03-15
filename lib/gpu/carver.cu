@@ -61,7 +61,7 @@ __global__ void gradientKernel(cudaTextureObject_t pixels, cudaSurfaceObject_t g
 
     if (tex2D<uint8_t>(mask, i, j) == 1)
     {
-      surf2Dwrite(0xFFFF0000, gradient, i * sizeof(uint32_t), j);
+      surf2Dwrite(0x00FF0000, gradient, i * sizeof(uint32_t), j);
       continue;
     }
 
@@ -268,6 +268,7 @@ Carver::~Carver()
   cudaFree(this->seam);
   cudaFree(this->buf);
   cudaFree(this->mask);
+  cudaDeviceReset();
 }
 
 void Carver::computeGradient()
